@@ -1,4 +1,4 @@
-# ROADMAP & TO-DO — [PROJECT NAME]
+# ROADMAP & TO-DO — DinoVerse (working codename)
 
 The durable backlog. Session task lists reset; **this file is the memory.** Check items off as
 they're done (`- [x]`), add new ones as they surface, and keep "Open Decisions" current.
@@ -27,11 +27,14 @@ Last updated: 2026-05-23
       Expo support, minimal config; fits the low-lock-in ethos. *Graduate to Nx only if the repo
       grows to many standalone apps/publishable libs needing generators + enforced boundaries.*
 
+- [x] **Multiplayer server:** **Colyseus** — authoritative server state (safety/anti-cheat),
+      schema-based delta sync, built-in rooms/matchmaking/reconnection; Phaser + TS client; runs on
+      Railway. *Socket.io/plain WS reserved for any future generic realtime (presence/notifications),
+      not the game rooms.*
+
 ### Still open
-- [ ] **Name the IP.** `[PROJECT NAME]` is a placeholder everywhere. Pick the franchise name +
-      check domain/trademark/app-store availability.
-- [ ] **Multiplayer server:** Colyseus vs Socket.io. (Colyseus = opinionated room/state framework;
-      Socket.io = lower-level, more manual.) — leaning Colyseus; hosted on Railway.
+- [ ] **Name the IP.** Currently using working codename **"DinoVerse"**. Pick the real franchise
+      name + check domain/trademark/app-store availability, then replace the codename everywhere.
 - [ ] **Compliance scope:** confirm target markets → COPPA (US), GDPR-K (EU), age-gating model.
 
 ---
@@ -80,7 +83,7 @@ Last updated: 2026-05-23
 ## PHASE 4 — Module: Safe Multiplayer Rooms
 
 - [ ] Co-op puzzle lobby (Phaser.js client)
-- [ ] Real-time room/state server (chosen framework)
+- [ ] Real-time room/state server (Colyseus on Railway)
 - [ ] **Preset-only** child-safe communication strings (no free-form chat)
 - [ ] Matchmaking / room lifecycle / reconnection handling
 - [ ] Anti-abuse + parental visibility into multiplayer activity

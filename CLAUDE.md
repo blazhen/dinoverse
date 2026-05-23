@@ -1,4 +1,4 @@
-# CLAUDE.md — Project Context for [PROJECT NAME]
+# CLAUDE.md — Project Context for DinoVerse (working codename)
 
 This file is loaded automatically each session. Keep it short; it points to the source-of-truth docs.
 
