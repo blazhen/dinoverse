@@ -36,6 +36,9 @@ expo-env.d.ts
 # Drizzle generated migrations meta (keep SQL, ignore snapshots if desired)
 # packages/db/drizzle/
 
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+
 # Misc
 coverage/
 *.local

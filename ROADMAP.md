@@ -53,8 +53,13 @@ Last updated: 2026-05-23
       React 19 for web if/when mobile moves to an isolated-linker Metro setup.*
 - [x] Add tooling baseline: Prettier, shared tsconfig presets, `.env.example`, README, `.gitignore`
 - [ ] Wire Cloudflare deploy for `apps/web` (`@opennextjs/cloudflare`) + preview environments
-- [ ] Set up Neon project + branching (a DB branch per preview deploy); run first migration
-- [ ] Set up Better Auth (parent/child account model) + Railway service for API/multiplayer
+- [x] Neon connected; first migration applied (parents, child_profiles, quizzes, progress live).
+      *TODO later: Neon branching (a DB branch per preview deploy).*
+- [x] Set up Better Auth (email/password) wired to Neon via Drizzle adapter. **Parent = the
+      Better Auth `user`**; `child_profiles.parentId` → `user.id`; standalone `parents` table dropped.
+      Verified end-to-end: sign-up writes `user` + credential `account` rows to Neon.
+      *Next: sign-in/up UI, parent/child profile flows, verifiable parental consent (COPPA).*
+- [ ] Set up Railway service for the API/multiplayer (deferred to multiplayer phase)
 - [ ] Add CI stub (typecheck + build on PR) and ESLint flat config across the workspace
 - [ ] Set up environment/secrets strategy (Cloudflare + Railway env; no secrets in repo)
 
