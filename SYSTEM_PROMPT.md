@@ -38,7 +38,8 @@ learning platform — held to production standards from day one.
   management / rate limiting.
 - **Mobile:** React Native / Expo (iOS + Android, offline caching)
 - **Database:** **Neon** (serverless Postgres, per-environment branching)
-- **Auth:** **Clerk** (COPPA-friendly parent/child account flows, role-based access)
+- **Auth:** **Better Auth** (self-hosted, TypeScript; user/children PII stays in your own Neon DB).
+  Postgres/Drizzle adapter + Expo plugin; verifiable parental consent flow is custom-built on top.
 - **Asset/file storage:** **Cloudflare R2**
 - **Game engine:** Phaser.js (web-first, lightweight, web-view friendly)
 - **Real-time / multiplayer:** Colyseus (leaning) / Socket.io — hosted on **Railway**

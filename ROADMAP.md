@@ -12,7 +12,10 @@ Last updated: 2026-05-23
 ### ✅ Resolved (2026-05-23)
 - [x] **Database:** **Neon** (serverless Postgres, branching). Replaces Supabase/Firebase as the DB.
       Auth/realtime/storage are now handled by dedicated services (below).
-- [x] **Auth:** **Clerk** — cleanest COPPA-friendly parent-consent / child-account flows.
+- [x] **Auth:** **Better Auth** — self-hosted TS library; keeps all user/children PII in your own
+      Neon DB (cleaner COPPA/GDPR-K data-deletion & residency, no per-MAU cost, no lock-in).
+      Trade-off: you own the security hardening (mitigated by Cloudflare WAF in front). Note:
+      *verifiable parental consent is built by us regardless of auth vendor.*
 - [x] **Frontend host + edge:** **Cloudflare** (Pages/Workers via `@opennextjs/cloudflare`) for
       best global CDN, plus WAF / DDoS / bot management / rate limiting at the edge.
 - [x] **Video:** **Cloudflare Stream** (signed URLs) — consolidated with frontend, no cross-vendor egress.
@@ -37,12 +40,12 @@ Last updated: 2026-05-23
 - [x] Create `CLAUDE.md` project context
 - [x] Create this `ROADMAP.md`
 - [x] Initialize git repository
-- [x] Resolve core infra decisions (Neon, Clerk, Cloudflare, Railway) — remaining: name, monorepo tool
+- [x] Resolve core infra decisions (Neon, Better Auth, Cloudflare, Railway) — remaining: name, monorepo tool
 - [ ] Scaffold monorepo: `apps/web` (Next.js+TS+Tailwind), `apps/mobile` (Expo),
       `packages/ui`, `packages/types`, `packages/db` (Neon schema/migrations), `packages/config`
 - [ ] Wire Cloudflare deploy for `apps/web` (`@opennextjs/cloudflare`) + preview environments
 - [ ] Set up Neon project + branching (a DB branch per preview deploy)
-- [ ] Set up Clerk (parent/child account model) + Railway service for API/multiplayer
+- [ ] Set up Better Auth (parent/child account model) + Railway service for API/multiplayer
 - [ ] Add tooling baseline: ESLint, Prettier, TypeScript config, `.env.example`, CI stub
 - [ ] Set up environment/secrets strategy (Cloudflare + Railway env; no secrets in repo)
 
@@ -50,7 +53,7 @@ Last updated: 2026-05-23
 
 - [ ] Data model / ERD: users, kid-profiles (under parent account), content, episodes, quizzes,
       progress, badges, multiplayer rooms, parental controls
-- [ ] Auth & roles via Clerk: parent vs child accounts, COPPA-compliant onboarding & consent
+- [ ] Auth & roles via Better Auth: parent vs child accounts, COPPA-compliant onboarding & consent
 - [ ] API routing plan (Cloudflare Workers edge fns vs Railway API) + naming conventions
 - [ ] Multi-platform state-sync strategy (web ↔ mobile, offline cache reconciliation)
 - [ ] Content moderation & child-safety architecture (preset comms, reporting, audit)
