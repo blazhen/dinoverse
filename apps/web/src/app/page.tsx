@@ -1,5 +1,6 @@
 import { Button } from '@dinoverse/ui';
 import type { Character } from '@dinoverse/types';
+import Link from 'next/link';
 
 const cast: Character[] = [
   { id: 'trik', name: 'Trik', archetype: 'The spark', personality: 'Fast, curious, mischievous' },
@@ -32,7 +33,14 @@ export default function Home() {
         ))}
       </ul>
 
-      <Button>Start playing</Button>
+      <div className="flex gap-3">
+        <Link href="/sign-up">
+          <Button>Create parent account</Button>
+        </Link>
+        <Link href="/sign-in">
+          <Button variant="secondary">Sign in</Button>
+        </Link>
+      </div>
     </main>
   );
 }

@@ -58,7 +58,9 @@ Last updated: 2026-05-23
 - [x] Set up Better Auth (email/password) wired to Neon via Drizzle adapter. **Parent = the
       Better Auth `user`**; `child_profiles.parentId` → `user.id`; standalone `parents` table dropped.
       Verified end-to-end: sign-up writes `user` + credential `account` rows to Neon.
-      *Next: sign-in/up UI, parent/child profile flows, verifiable parental consent (COPPA).*
+- [x] Auth UI: `/sign-up`, `/sign-in`, and a server-gated `/dashboard` (redirects to /sign-in
+      when unauthenticated) + sign-out. Verified: gating 307s, sign-in sets session, dashboard renders.
+      *Next: child-profile CRUD flow, verifiable parental consent (COPPA).*
 - [ ] Set up Railway service for the API/multiplayer (deferred to multiplayer phase)
 - [ ] Add CI stub (typecheck + build on PR) and ESLint flat config across the workspace
 - [ ] Set up environment/secrets strategy (Cloudflare + Railway env; no secrets in repo)
