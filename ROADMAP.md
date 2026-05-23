@@ -23,13 +23,15 @@ Last updated: 2026-05-23
 - [x] **Stateful backend (API + multiplayer + jobs):** **Railway** (long-lived containers — the one
       thing the edge can't host). *Escape hatch: move the realtime server to **Fly.io** if global
       multiplayer latency becomes critical (Railway has limited regions).*
+- [x] **Monorepo tooling:** **Turborepo + pnpm workspaces** — lightweight, first-class Next.js +
+      Expo support, minimal config; fits the low-lock-in ethos. *Graduate to Nx only if the repo
+      grows to many standalone apps/publishable libs needing generators + enforced boundaries.*
 
 ### Still open
 - [ ] **Name the IP.** `[PROJECT NAME]` is a placeholder everywhere. Pick the franchise name +
       check domain/trademark/app-store availability.
 - [ ] **Multiplayer server:** Colyseus vs Socket.io. (Colyseus = opinionated room/state framework;
       Socket.io = lower-level, more manual.) — leaning Colyseus; hosted on Railway.
-- [ ] **Monorepo tooling:** Turborepo vs Nx (for shared web + mobile + packages).
 - [ ] **Compliance scope:** confirm target markets → COPPA (US), GDPR-K (EU), age-gating model.
 
 ---
@@ -40,8 +42,8 @@ Last updated: 2026-05-23
 - [x] Create `CLAUDE.md` project context
 - [x] Create this `ROADMAP.md`
 - [x] Initialize git repository
-- [x] Resolve core infra decisions (Neon, Better Auth, Cloudflare, Railway) — remaining: name, monorepo tool
-- [ ] Scaffold monorepo: `apps/web` (Next.js+TS+Tailwind), `apps/mobile` (Expo),
+- [x] Resolve core infra decisions (Neon, Better Auth, Cloudflare, Railway, Turborepo) — remaining: name
+- [ ] Scaffold **Turborepo + pnpm** monorepo: `apps/web` (Next.js+TS+Tailwind), `apps/mobile` (Expo),
       `packages/ui`, `packages/types`, `packages/db` (Neon schema/migrations), `packages/config`
 - [ ] Wire Cloudflare deploy for `apps/web` (`@opennextjs/cloudflare`) + preview environments
 - [ ] Set up Neon project + branching (a DB branch per preview deploy)

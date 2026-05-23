@@ -46,6 +46,7 @@ learning platform — held to production standards from day one.
   (persistent stateful server; *Fly.io* as escape hatch for global low-latency)
 - **Stateful backend & jobs:** **Railway** (API, cron/aggregation, multiplayer server)
 - **Video:** **Cloudflare Stream** (adaptive-bitrate, signed URLs)
+- **Monorepo:** **Turborepo + pnpm workspaces** (apps: web, mobile; shared packages: ui, types, db, config)
 
 ## SYSTEM MODULES TO ARCHITECT
 
