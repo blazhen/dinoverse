@@ -1,6 +1,8 @@
 import { neon } from '@neondatabase/serverless';
+import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/neon-http';
 
+import { childProfiles } from './schema';
 import * as schema from './schema';
 
 export * from './schema';
@@ -15,3 +17,34 @@ export function createDb(connectionString: string) {
 }
 
 export type Database = ReturnType<typeof createDb>;
+
+// ─── Child profile data access (parent-scoped) ──────────────────
+export type AgeBand = (typeof schema.ageBand.enumValues)[number];
+export type CharacterId = (typeof schema.characterId.enumValues)[number];
+
+export interface NewChildProfile {
+  parentId: string;
+  displayName: string;
+  ageBand: AgeBand;
+  avatarCharacter: CharacterId;
+}
+
+export function listChildProfiles(db: Database, parentId: string) {
+  return db
+    .select()
+    .from(childProfiles)
+    .where(eq(childProfiles.parentId, parentId))
+    .orderBy(childProfiles.createdAt);
+}
+
+export async function createChildProfile(db: Database, data: NewChildProfile) {
+  const [row] = await db.insert(childProfiles).values(data).returning();
+  return row;
+}
+
+/** Deletes only if the child belongs to the given parent (ownership guard). */
+export function deleteChildProfile(db: Database, id: string, parentId: string) {
+  return db
+    .delete(childProfiles)
+    .where(and(eq(childProfiles.id, id), eq(childProfiles.parentId, parentId)));
+}

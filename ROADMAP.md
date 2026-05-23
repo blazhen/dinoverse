@@ -60,7 +60,9 @@ Last updated: 2026-05-23
       Verified end-to-end: sign-up writes `user` + credential `account` rows to Neon.
 - [x] Auth UI: `/sign-up`, `/sign-in`, and a server-gated `/dashboard` (redirects to /sign-in
       when unauthenticated) + sign-out. Verified: gating 307s, sign-in sets session, dashboard renders.
-      *Next: child-profile CRUD flow, verifiable parental consent (COPPA).*
+- [x] Child-profile CRUD: parent adds/removes kids (name, age band, dino avatar) on the dashboard
+      via server actions; data layer in `@dinoverse/db`. Verified vs Neon incl. parent→child cascade
+      delete and enum validation. *Next: verifiable parental consent (COPPA).*
 - [ ] Set up Railway service for the API/multiplayer (deferred to multiplayer phase)
 - [ ] Add CI stub (typecheck + build on PR) and ESLint flat config across the workspace
 - [ ] Set up environment/secrets strategy (Cloudflare + Railway env; no secrets in repo)

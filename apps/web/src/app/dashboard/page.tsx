@@ -1,18 +1,30 @@
+import { type CharacterId, listChildProfiles } from '@dinoverse/db';
+import { Button } from '@dinoverse/ui';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 
 import { auth } from '@/lib/auth';
+import { db } from '@/lib/db';
 
+import { addChild, removeChild } from './actions';
 import { SignOutButton } from './sign-out-button';
 
+const AVATARS: Record<CharacterId, string> = {
+  trik: '⚡ Trik',
+  stego: '🛡️ Stego',
+  brachiosaurus: '🔭 Brachiosaurus',
+};
+
+const inputClass = 'rounded-xl border border-slate-300 px-4 py-2.5 font-normal';
+
 export default async function DashboardPage() {
-  // Server-side gate: no session → bounce to sign-in.
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session) {
     redirect('/sign-in');
   }
 
   const { user } = session;
+  const children = await listChildProfiles(db, user.id);
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-16">
@@ -28,9 +40,60 @@ export default async function DashboardPage() {
 
       <section className="rounded-2xl bg-white p-6 shadow-sm">
         <h2 className="text-xl font-bold">Your kids</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          No child profiles yet. (Coming next: add a child, pick their dino avatar and age band.)
-        </p>
+
+        {children.length === 0 ? (
+          <p className="mt-1 text-sm text-slate-500">No child profiles yet. Add your first below.</p>
+        ) : (
+          <ul className="mt-4 flex flex-col gap-3">
+            {children.map((child) => (
+              <li
+                key={child.id}
+                className="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3"
+              >
+                <div>
+                  <p className="font-bold">{child.displayName}</p>
+                  <p className="text-sm text-slate-500">
+                    {AVATARS[child.avatarCharacter]} · ages {child.ageBand}
+                  </p>
+                </div>
+                <form action={removeChild}>
+                  <input type="hidden" name="id" value={child.id} />
+                  <button
+                    type="submit"
+                    className="rounded-lg px-3 py-1 text-sm font-semibold text-red-600 hover:bg-red-50"
+                  >
+                    Remove
+                  </button>
+                </form>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <form action={addChild} className="mt-6 flex flex-col gap-3 border-t border-slate-100 pt-6">
+          <h3 className="font-semibold">Add a child</h3>
+          <input name="displayName" placeholder="Child's name" required className={inputClass} />
+          <div className="flex gap-3">
+            <select name="ageBand" required className={`${inputClass} flex-1`} defaultValue="5-6">
+              <option value="5-6">Ages 5–6</option>
+              <option value="7-8">Ages 7–8</option>
+              <option value="9-10">Ages 9–10</option>
+            </select>
+            <select
+              name="avatarCharacter"
+              required
+              className={`${inputClass} flex-1`}
+              defaultValue="trik"
+            >
+              <option value="trik">⚡ Trik</option>
+              <option value="stego">🛡️ Stego</option>
+              <option value="brachiosaurus">🔭 Brachiosaurus</option>
+            </select>
+          </div>
+          <Button type="submit" className="self-start">
+            Add child
+          </Button>
+        </form>
       </section>
 
       <section className="rounded-2xl bg-white p-6 shadow-sm">
