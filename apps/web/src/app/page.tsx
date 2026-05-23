@@ -41,6 +41,10 @@ export default function Home() {
           <Button variant="secondary">Sign in</Button>
         </Link>
       </div>
+
+      <Link href="/feed" className="text-sm font-semibold text-emerald-600 hover:underline">
+        ▶ Watch the feed
+      </Link>
     </main>
   );
 }

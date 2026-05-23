@@ -79,8 +79,11 @@ Last updated: 2026-05-23
 
 ## PHASE 2 — Module: Vertical Content Feed
 
-- [ ] Infinite-scroll vertical feed UI (web + mobile) with child-safe UX
-- [ ] Video playback w/ adaptive bitrate via chosen provider
+- [x] Vertical snap-scroll feed UI (web) with child-safe overlay (no links/comments), autoplay-on-view
+      via IntersectionObserver, muted-by-default + sound toggle. `/feed` route. Verified renders.
+- [ ] Mobile feed UI (Expo) — port the vertical feed to React Native
+- [ ] Video playback w/ adaptive bitrate via Cloudflare Stream. *Dev uses public sample mp4s;
+      `resolveFeed()` in lib/sample-feed.ts is the single swap point to Stream signed URLs.*
 - [ ] Micro-game embed format inside the feed
 - [ ] Feed ranking / sequencing logic (curated, NOT addictive-by-design — age-appropriate limits)
 - [ ] Performance budget + lazy loading + preloading strategy
