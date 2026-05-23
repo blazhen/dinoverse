@@ -46,12 +46,16 @@ Last updated: 2026-05-23
 - [x] Create this `ROADMAP.md`
 - [x] Initialize git repository
 - [x] Resolve core infra decisions (Neon, Better Auth, Cloudflare, Railway, Turborepo) — remaining: name
-- [ ] Scaffold **Turborepo + pnpm** monorepo: `apps/web` (Next.js+TS+Tailwind), `apps/mobile` (Expo),
-      `packages/ui`, `packages/types`, `packages/db` (Neon schema/migrations), `packages/config`
+- [x] Scaffold **Turborepo + pnpm** monorepo: `apps/web` (Next.js 15+TS+Tailwind v4),
+      `apps/mobile` (Expo SDK 52), `packages/ui`, `packages/types`, `packages/db` (Neon+Drizzle),
+      `packages/config`. Verified: `pnpm install`, `pnpm -r typecheck`, and `web build` all pass.
+      *Note: React pinned to 18.3.1 repo-wide (Expo 52 constraint) via pnpm override; revisit
+      React 19 for web if/when mobile moves to an isolated-linker Metro setup.*
+- [x] Add tooling baseline: Prettier, shared tsconfig presets, `.env.example`, README, `.gitignore`
 - [ ] Wire Cloudflare deploy for `apps/web` (`@opennextjs/cloudflare`) + preview environments
-- [ ] Set up Neon project + branching (a DB branch per preview deploy)
+- [ ] Set up Neon project + branching (a DB branch per preview deploy); run first migration
 - [ ] Set up Better Auth (parent/child account model) + Railway service for API/multiplayer
-- [ ] Add tooling baseline: ESLint, Prettier, TypeScript config, `.env.example`, CI stub
+- [ ] Add CI stub (typecheck + build on PR) and ESLint flat config across the workspace
 - [ ] Set up environment/secrets strategy (Cloudflare + Railway env; no secrets in repo)
 
 ## PHASE 1 — Technical Architecture (document before building)

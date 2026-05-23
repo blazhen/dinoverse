@@ -1,0 +1,4 @@
+@import 'tailwindcss';
+
+/* Scan shared UI package so its Tailwind classes are included in the build. */
+@source '../../../../packages/ui/src';

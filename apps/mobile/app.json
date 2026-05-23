@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "DinoVerse",
+    "slug": "dinoverse",
+    "version": "0.0.0",
+    "orientation": "portrait",
+    "scheme": "dinoverse",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.dinoverse.app"
+    }
+  }
+}

@@ -29,6 +29,13 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 
+# Next.js / Expo generated type files
+next-env.d.ts
+expo-env.d.ts
+
+# Drizzle generated migrations meta (keep SQL, ignore snapshots if desired)
+# packages/db/drizzle/
+
 # Misc
 coverage/
 *.local
