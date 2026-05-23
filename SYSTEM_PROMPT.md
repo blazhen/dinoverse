@@ -33,13 +33,18 @@ learning platform — held to production standards from day one.
 
 ## TECH STACK (adhere strictly unless a change is explicitly approved)
 
-- **Frontend (web):** React · Next.js · TypeScript · TailwindCSS
+- **Frontend (web):** React · Next.js · TypeScript · TailwindCSS — hosted on **Cloudflare**
+  (Pages/Workers via `@opennextjs/cloudflare`); edge security via Cloudflare WAF / DDoS / bot
+  management / rate limiting.
 - **Mobile:** React Native / Expo (iOS + Android, offline caching)
-- **Backend & DB:** Supabase **or** Firebase (real-time listeners, relational/document storage,
-  auth, secure role-based access) — *decision pending, see ROADMAP*
+- **Database:** **Neon** (serverless Postgres, per-environment branching)
+- **Auth:** **Clerk** (COPPA-friendly parent/child account flows, role-based access)
+- **Asset/file storage:** **Cloudflare R2**
 - **Game engine:** Phaser.js (web-first, lightweight, web-view friendly)
-- **Real-time / multiplayer:** Colyseus **or** Socket.io (state sync for co-op puzzles)
-- **Video:** Cloudflare Stream **or** Mux (adaptive-bitrate, safe delivery)
+- **Real-time / multiplayer:** Colyseus (leaning) / Socket.io — hosted on **Railway**
+  (persistent stateful server; *Fly.io* as escape hatch for global low-latency)
+- **Stateful backend & jobs:** **Railway** (API, cron/aggregation, multiplayer server)
+- **Video:** **Cloudflare Stream** (adaptive-bitrate, signed URLs)
 
 ## SYSTEM MODULES TO ARCHITECT
 

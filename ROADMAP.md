@@ -7,15 +7,25 @@ Last updated: 2026-05-23
 
 ---
 
-## 🚦 OPEN DECISIONS (resolve before deep build — each blocks downstream work)
+## 🚦 OPEN DECISIONS
 
+### ✅ Resolved (2026-05-23)
+- [x] **Database:** **Neon** (serverless Postgres, branching). Replaces Supabase/Firebase as the DB.
+      Auth/realtime/storage are now handled by dedicated services (below).
+- [x] **Auth:** **Clerk** — cleanest COPPA-friendly parent-consent / child-account flows.
+- [x] **Frontend host + edge:** **Cloudflare** (Pages/Workers via `@opennextjs/cloudflare`) for
+      best global CDN, plus WAF / DDoS / bot management / rate limiting at the edge.
+- [x] **Video:** **Cloudflare Stream** (signed URLs) — consolidated with frontend, no cross-vendor egress.
+- [x] **Asset/file storage:** **Cloudflare R2** (zero egress fees).
+- [x] **Stateful backend (API + multiplayer + jobs):** **Railway** (long-lived containers — the one
+      thing the edge can't host). *Escape hatch: move the realtime server to **Fly.io** if global
+      multiplayer latency becomes critical (Railway has limited regions).*
+
+### Still open
 - [ ] **Name the IP.** `[PROJECT NAME]` is a placeholder everywhere. Pick the franchise name +
       check domain/trademark/app-store availability.
-- [ ] **Backend platform:** Supabase vs Firebase. (Supabase = Postgres/relational/SQL, open-source;
-      Firebase = document/real-time, mature mobile SDKs.) → drives schema design.
 - [ ] **Multiplayer server:** Colyseus vs Socket.io. (Colyseus = opinionated room/state framework;
-      Socket.io = lower-level, more manual.)
-- [ ] **Video infrastructure:** Cloudflare Stream vs Mux. (Cost, analytics, signed-URL safety.)
+      Socket.io = lower-level, more manual.) — leaning Colyseus; hosted on Railway.
 - [ ] **Monorepo tooling:** Turborepo vs Nx (for shared web + mobile + packages).
 - [ ] **Compliance scope:** confirm target markets → COPPA (US), GDPR-K (EU), age-gating model.
 
@@ -26,22 +36,25 @@ Last updated: 2026-05-23
 - [x] Turn the brief into a system prompt (`SYSTEM_PROMPT.md`)
 - [x] Create `CLAUDE.md` project context
 - [x] Create this `ROADMAP.md`
-- [ ] Initialize git repository
-- [ ] Resolve the Open Decisions above (at least: name, backend, monorepo tool)
+- [x] Initialize git repository
+- [x] Resolve core infra decisions (Neon, Clerk, Cloudflare, Railway) — remaining: name, monorepo tool
 - [ ] Scaffold monorepo: `apps/web` (Next.js+TS+Tailwind), `apps/mobile` (Expo),
-      `packages/ui`, `packages/types`, `packages/config`
+      `packages/ui`, `packages/types`, `packages/db` (Neon schema/migrations), `packages/config`
+- [ ] Wire Cloudflare deploy for `apps/web` (`@opennextjs/cloudflare`) + preview environments
+- [ ] Set up Neon project + branching (a DB branch per preview deploy)
+- [ ] Set up Clerk (parent/child account model) + Railway service for API/multiplayer
 - [ ] Add tooling baseline: ESLint, Prettier, TypeScript config, `.env.example`, CI stub
-- [ ] Set up environment/secrets strategy (no secrets in repo)
+- [ ] Set up environment/secrets strategy (Cloudflare + Railway env; no secrets in repo)
 
 ## PHASE 1 — Technical Architecture (document before building)
 
 - [ ] Data model / ERD: users, kid-profiles (under parent account), content, episodes, quizzes,
       progress, badges, multiplayer rooms, parental controls
-- [ ] Auth & roles: parent vs child accounts, COPPA-compliant onboarding & consent
-- [ ] API routing plan (REST/RPC/edge functions) + naming conventions
+- [ ] Auth & roles via Clerk: parent vs child accounts, COPPA-compliant onboarding & consent
+- [ ] API routing plan (Cloudflare Workers edge fns vs Railway API) + naming conventions
 - [ ] Multi-platform state-sync strategy (web ↔ mobile, offline cache reconciliation)
 - [ ] Content moderation & child-safety architecture (preset comms, reporting, audit)
-- [ ] Define ERD diagram + write migration scripts for chosen backend
+- [ ] Define ERD diagram + write Neon (Postgres) migration scripts; adopt row-level security patterns
 
 ## PHASE 2 — Module: Vertical Content Feed
 
