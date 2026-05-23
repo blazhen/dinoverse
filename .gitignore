@@ -32,6 +32,7 @@ Thumbs.db
 # Next.js / Expo generated type files
 next-env.d.ts
 expo-env.d.ts
+*.tsbuildinfo
 
 # Drizzle generated migrations meta (keep SQL, ignore snapshots if desired)
 # packages/db/drizzle/
