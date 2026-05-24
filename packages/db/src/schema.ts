@@ -1,5 +1,14 @@
 import { relations } from 'drizzle-orm';
-import { boolean, integer, pgEnum, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import {
+  boolean,
+  integer,
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
 
 // ════════════════════════════════════════════════════════════════
 //  Better Auth tables — managed by Better Auth.
@@ -83,6 +92,17 @@ export const quizzes = pgTable('quizzes', {
   topic: text('topic').notNull(),
 });
 
+export const quizQuestions = pgTable('quiz_questions', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  quizId: uuid('quiz_id')
+    .notNull()
+    .references(() => quizzes.id, { onDelete: 'cascade' }),
+  prompt: text('prompt').notNull(),
+  choices: jsonb('choices').$type<string[]>().notNull(),
+  correctIndex: integer('correct_index').notNull(),
+  position: integer('position').notNull().default(0),
+});
+
 export const progress = pgTable('progress', {
   id: uuid('id').defaultRandom().primaryKey(),
   childId: uuid('child_id')
@@ -103,6 +123,14 @@ export const userRelations = relations(user, ({ many }) => ({
 export const childProfilesRelations = relations(childProfiles, ({ one, many }) => ({
   parent: one(user, { fields: [childProfiles.parentId], references: [user.id] }),
   progress: many(progress),
+}));
+
+export const quizzesRelations = relations(quizzes, ({ many }) => ({
+  questions: many(quizQuestions),
+}));
+
+export const quizQuestionsRelations = relations(quizQuestions, ({ one }) => ({
+  quiz: one(quizzes, { fields: [quizQuestions.quizId], references: [quizzes.id] }),
 }));
 
 export const progressRelations = relations(progress, ({ one }) => ({

@@ -90,9 +90,14 @@ Last updated: 2026-05-23
 
 ## PHASE 3 — Module: Gamified Learning & Progression
 
-- [ ] Quiz engine + question schema
-- [ ] Achievement / badge system
+- [x] Quiz engine + question schema (`quiz_questions` table) + seed (`db:seed`). `/learn` lists
+      quizzes; `/learn/[quizId]` is an interactive player with per-answer feedback. Verified renders.
+- [x] Progress data layer: `recordProgress` / `listProgressForChild`; verified vs Neon incl. cascade.
+      *Note: scoring is currently client-side (correctIndex sent to client) — move to server-side
+      scoring before launch so answers can't be inspected.*
+- [~] Achievement / badge system — basic perfect-score badge in the quiz result; needs real badges table
 - [ ] Unlockable dino-facts content system
+- [ ] Persist quiz results to a logged-in child (needs a kid-session/profile-selection flow)
 - [ ] Progress tracking synced across web + mobile
 - [ ] XP / streak mechanics tuned for collaboration over competition
 

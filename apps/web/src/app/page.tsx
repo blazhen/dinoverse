@@ -42,9 +42,14 @@ export default function Home() {
         </Link>
       </div>
 
-      <Link href="/feed" className="text-sm font-semibold text-emerald-600 hover:underline">
-        ▶ Watch the feed
-      </Link>
+      <div className="flex gap-4 text-sm font-semibold text-emerald-600">
+        <Link href="/feed" className="hover:underline">
+          ▶ Watch the feed
+        </Link>
+        <Link href="/learn" className="hover:underline">
+          🦕 Learn &amp; play
+        </Link>
+      </div>
     </main>
   );
 }
