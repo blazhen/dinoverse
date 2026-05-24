@@ -63,6 +63,12 @@ export default function SignInPage() {
         </Button>
       </form>
 
+      <p className="text-center text-sm">
+        <Link href="/forgot-password" className="font-semibold text-emerald-600">
+          Forgot your password?
+        </Link>
+      </p>
+
       <p className="text-center text-sm text-slate-500">
         Need an account?{' '}
         <Link href="/sign-up" className="font-semibold text-emerald-600">

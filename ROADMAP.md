@@ -63,6 +63,10 @@ Last updated: 2026-05-23
 - [x] Child-profile CRUD: parent adds/removes kids (name, age band, dino avatar) on the dashboard
       via server actions; data layer in `@dinoverse/db`. Verified vs Neon incl. parent→child cascade
       delete and enum validation. *Next: verifiable parental consent (COPPA).*
+- [x] Password reset via email (Resend): `/forgot-password` + `/reset-password`, Better Auth
+      `sendResetPassword`, email helper in `lib/email.ts`. Verified end-to-end (request→token→reset→
+      new pw works, old pw 401; Resend call confirmed). *To deliver to real users: verify a domain at
+      resend.com/domains and set `EMAIL_FROM` to it (sandbox only mails the Resend account owner).*
 - [ ] Set up Railway service for the API/multiplayer (deferred to multiplayer phase)
 - [ ] Add CI stub (typecheck + build on PR) and ESLint flat config across the workspace
 - [ ] Set up environment/secrets strategy (Cloudflare + Railway env; no secrets in repo)

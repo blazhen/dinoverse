@@ -2,6 +2,8 @@ import { account, createDb, session, user, verification } from '@dinoverse/db';
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 
+import { resetPasswordEmail, sendEmail } from './email';
+
 const db = createDb(process.env.DATABASE_URL!);
 
 /**
@@ -17,5 +19,12 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
+    sendResetPassword: async ({ user, url }) => {
+      await sendEmail({
+        to: user.email,
+        subject: 'Reset your DinoVerse password',
+        html: resetPasswordEmail(url),
+      });
+    },
   },
 });
