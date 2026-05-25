@@ -101,7 +101,8 @@ Last updated: 2026-05-23
       scoring before launch so answers can't be inspected.*
 - [~] Achievement / badge system — basic perfect-score badge in the quiz result; needs real badges table
 - [ ] Unlockable dino-facts content system
-- [ ] Persist quiz results to a logged-in child (needs a kid-session/profile-selection flow)
+- [x] "Who's playing" kid-profile selection (`/play`, ownership-validated cookie); quiz completion
+      persists to the active child via `recordQuizResult`. Verified vs Neon.
 - [ ] Progress tracking synced across web + mobile
 - [ ] XP / streak mechanics tuned for collaboration over competition
 
@@ -115,11 +116,12 @@ Last updated: 2026-05-23
 
 ## PHASE 5 — Module: Parent Dashboard
 
-- [ ] Segregated parent auth area
-- [ ] Learning-metrics analytics views
+- [x] Segregated parent auth area (`/dashboard`, server-gated)
+- [~] Learning-metrics: dashboard shows per-child quizzes-completed + best score + latest quiz.
+      Needs richer analytics (trends, per-topic breakdown).
 - [ ] Screen-time controls + enforcement across platforms
 - [ ] Milestone / progression monitoring
-- [ ] Multi-child account management
+- [x] Multi-child account management (add/remove kids, per-child progress)
 
 ## PHASE 6 — AI Video & Creative Pipeline
 

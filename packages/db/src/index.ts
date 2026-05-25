@@ -1,5 +1,5 @@
 import { neon } from '@neondatabase/serverless';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/neon-http';
 
 import { childProfiles, progress, quizQuestions, quizzes } from './schema';
@@ -80,4 +80,18 @@ export function listProgressForChild(db: Database, childId: string) {
     .from(progress)
     .where(eq(progress.childId, childId))
     .orderBy(progress.completedAt);
+}
+
+/** Progress rows joined with quiz titles, newest first — for the parent dashboard. */
+export function listChildProgressDetailed(db: Database, childId: string) {
+  return db
+    .select({
+      quizTitle: quizzes.title,
+      score: progress.score,
+      completedAt: progress.completedAt,
+    })
+    .from(progress)
+    .innerJoin(quizzes, eq(progress.quizId, quizzes.id))
+    .where(eq(progress.childId, childId))
+    .orderBy(desc(progress.completedAt));
 }

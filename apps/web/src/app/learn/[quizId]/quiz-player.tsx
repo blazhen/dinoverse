@@ -4,6 +4,8 @@ import { Button } from '@dinoverse/ui';
 import Link from 'next/link';
 import { useState } from 'react';
 
+import { recordQuizResult } from '../actions';
+
 interface Question {
   id: string;
   prompt: string;
@@ -11,11 +13,22 @@ interface Question {
   correctIndex: number;
 }
 
-export function QuizPlayer({ title, questions }: { title: string; questions: Question[] }) {
+type SaveState = { ok: true; childName: string } | { ok: false } | null;
+
+export function QuizPlayer({
+  quizId,
+  title,
+  questions,
+}: {
+  quizId: string;
+  title: string;
+  questions: Question[];
+}) {
   const [index, setIndex] = useState(0);
   const [score, setScore] = useState(0);
   const [picked, setPicked] = useState<number | null>(null);
   const [finished, setFinished] = useState(false);
+  const [saved, setSaved] = useState<SaveState>(null);
 
   const question = questions[index];
 
@@ -27,12 +40,19 @@ export function QuizPlayer({ title, questions }: { title: string; questions: Que
     }
   }
 
+  async function finish(finalScore: number) {
+    setFinished(true);
+    const result = await recordQuizResult(quizId, finalScore);
+    setSaved(result.ok ? { ok: true, childName: result.childName } : { ok: false });
+  }
+
   function next() {
     if (index + 1 < questions.length) {
       setIndex((i) => i + 1);
       setPicked(null);
     } else {
-      setFinished(true);
+      const finalScore = score; // score already reflects the last answer
+      void finish(finalScore);
     }
   }
 
@@ -51,6 +71,22 @@ export function QuizPlayer({ title, questions }: { title: string; questions: Que
         <p className="text-slate-500">
           {perfect ? 'Perfect score — you earned the Dino Genius badge!' : 'Great job! Try again for a perfect score.'}
         </p>
+
+        {saved?.ok && (
+          <p className="text-sm font-semibold text-emerald-600">
+            Saved to {saved.childName}&apos;s progress ✓
+          </p>
+        )}
+        {saved?.ok === false && (
+          <p className="text-sm text-slate-400">
+            Not saved —{' '}
+            <Link href="/play" className="font-semibold text-emerald-600">
+              pick who&apos;s playing
+            </Link>{' '}
+            to track progress.
+          </p>
+        )}
+
         <div className="flex gap-3">
           <Button
             onClick={() => {
@@ -58,6 +94,7 @@ export function QuizPlayer({ title, questions }: { title: string; questions: Que
               setScore(0);
               setPicked(null);
               setFinished(false);
+              setSaved(null);
             }}
           >
             Play again

@@ -14,6 +14,7 @@ export default async function QuizPage({ params }: { params: Promise<{ quizId: s
 
   return (
     <QuizPlayer
+      quizId={quiz.id}
       title={quiz.title}
       questions={quiz.questions.map((q) => ({
         id: q.id,

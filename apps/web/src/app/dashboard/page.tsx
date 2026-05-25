@@ -1,6 +1,7 @@
-import { type CharacterId, listChildProfiles } from '@dinoverse/db';
+import { type CharacterId, listChildProfiles, listChildProgressDetailed } from '@dinoverse/db';
 import { Button } from '@dinoverse/ui';
 import { headers } from 'next/headers';
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { auth } from '@/lib/auth';
@@ -25,6 +26,9 @@ export default async function DashboardPage() {
 
   const { user } = session;
   const children = await listChildProfiles(db, user.id);
+  const progressByChild = await Promise.all(
+    children.map((c) => listChildProgressDetailed(db, c.id)),
+  );
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-16">
@@ -39,34 +43,52 @@ export default async function DashboardPage() {
       </header>
 
       <section className="rounded-2xl bg-white p-6 shadow-sm">
-        <h2 className="text-xl font-bold">Your kids</h2>
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-bold">Your kids</h2>
+          {children.length > 0 && (
+            <Link href="/play" className="text-sm font-semibold text-emerald-600 hover:underline">
+              ▶ Who&apos;s playing?
+            </Link>
+          )}
+        </div>
 
         {children.length === 0 ? (
           <p className="mt-1 text-sm text-slate-500">No child profiles yet. Add your first below.</p>
         ) : (
           <ul className="mt-4 flex flex-col gap-3">
-            {children.map((child) => (
-              <li
-                key={child.id}
-                className="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3"
-              >
-                <div>
-                  <p className="font-bold">{child.displayName}</p>
-                  <p className="text-sm text-slate-500">
-                    {AVATARS[child.avatarCharacter]} · ages {child.ageBand}
-                  </p>
-                </div>
-                <form action={removeChild}>
-                  <input type="hidden" name="id" value={child.id} />
-                  <button
-                    type="submit"
-                    className="rounded-lg px-3 py-1 text-sm font-semibold text-red-600 hover:bg-red-50"
-                  >
-                    Remove
-                  </button>
-                </form>
-              </li>
-            ))}
+            {children.map((child, i) => {
+              const history = progressByChild[i] ?? [];
+              const best = history.length ? Math.max(...history.map((h) => h.score)) : null;
+              return (
+                <li key={child.id} className="rounded-xl bg-slate-50 px-4 py-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-bold">{child.displayName}</p>
+                      <p className="text-sm text-slate-500">
+                        {AVATARS[child.avatarCharacter]} · ages {child.ageBand}
+                      </p>
+                    </div>
+                    <form action={removeChild}>
+                      <input type="hidden" name="id" value={child.id} />
+                      <button
+                        type="submit"
+                        className="rounded-lg px-3 py-1 text-sm font-semibold text-red-600 hover:bg-red-50"
+                      >
+                        Remove
+                      </button>
+                    </form>
+                  </div>
+                  {history.length > 0 ? (
+                    <p className="mt-2 text-xs text-slate-500">
+                      {history.length} quiz{history.length === 1 ? '' : 'zes'} completed · best
+                      score {best} · last: {history[0]!.quizTitle}
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-slate-400">No quizzes completed yet</p>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         )}
 
