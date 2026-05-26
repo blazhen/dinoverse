@@ -71,7 +71,7 @@ export const verification = pgTable('verification', {
 //  DinoVerse domain tables
 // ════════════════════════════════════════════════════════════════
 
-export const ageBand = pgEnum('age_band', ['5-6', '7-8', '9-10']);
+export const ageBand = pgEnum('age_band', ['5-6', '7-8', '9-10', '11-12', '13-14']);
 export const characterId = pgEnum('character_id', ['trik', 'stego', 'brachiosaurus']);
 
 /** A child belongs to a parent (the Better Auth `user`). Children never authenticate. */

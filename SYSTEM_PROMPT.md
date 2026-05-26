@@ -21,11 +21,14 @@ learning platform — held to production standards from day one.
   society parallel to human civilization — dino-cities, dino-schools, jobs, and internet culture.
 - **Tone blend:** Pixar warmth · DreamWorks humor · Duolingo gamification · Netflix simplicity ·
   TikTok engagement.
-- **Audience:** Core children ages **5–10**; multi-layered humor and shared multiplayer for
-  parents and older siblings.
+- **Audience:** Children ages **5–14**; multi-layered humor and shared multiplayer for parents and
+  older siblings. The span is wide, so design for **age tiers** (5-6, 7-8, 9-10, 11-12, 13-14).
 - **Product core:** This is fundamentally a **game platform** — an **open-world 2D game** (with some
-  3D parts) plus **many puzzle & learning games** (built on Phaser.js). The video feed, quizzes, and
-  dashboard support that core; quizzes are a minor learning-game type, not the focus.
+  3D parts) plus **many puzzle & learning games** (built on Phaser.js). Architecture is
+  **hub-and-spoke**: the open world is a hub that links to many mini-games, each scaling difficulty
+  by the child's age band. The video feed, quizzes, and dashboard support that core; quizzes are a
+  minor learning-game type, not the focus. Simple puzzles may be React/DOM; Phaser is for the world
+  + action games.
 
 ## CHARACTER CANON (maintain strict consistency in all narrative, art, and data)
 

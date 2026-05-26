@@ -100,6 +100,8 @@ export default async function DashboardPage() {
               <option value="5-6">Ages 5–6</option>
               <option value="7-8">Ages 7–8</option>
               <option value="9-10">Ages 9–10</option>
+              <option value="11-12">Ages 11–12</option>
+              <option value="13-14">Ages 13–14</option>
             </select>
             <select
               name="avatarCharacter"
