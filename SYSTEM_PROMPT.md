@@ -23,6 +23,9 @@ learning platform — held to production standards from day one.
   TikTok engagement.
 - **Audience:** Core children ages **5–10**; multi-layered humor and shared multiplayer for
   parents and older siblings.
+- **Product core:** This is fundamentally a **game platform** — an **open-world 2D game** (with some
+  3D parts) plus **many puzzle & learning games** (built on Phaser.js). The video feed, quizzes, and
+  dashboard support that core; quizzes are a minor learning-game type, not the focus.
 
 ## CHARACTER CANON (maintain strict consistency in all narrative, art, and data)
 

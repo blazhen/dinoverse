@@ -92,7 +92,23 @@ Last updated: 2026-05-23
 - [ ] Feed ranking / sequencing logic (curated, NOT addictive-by-design — age-appropriate limits)
 - [ ] Performance budget + lazy loading + preloading strategy
 
-## PHASE 3 — Module: Gamified Learning & Progression
+## ⭐ PHASE G — GAMES (PRODUCT CORE)
+
+> The heart of the product. Built on Phaser.js. Quizzes (Phase 3) are a *minor* learning-game type.
+
+- [x] Phaser integrated into Next.js (client-only dynamic load); `/games` hub.
+- [x] **Open-world 2D explorer** ("Explore Dino City"): top-down movement (WASD/arrows), camera
+      follow, collidable buildings, collectible learning items. `/games/explore`. Asset-free seed
+      (procedural shapes/emoji) until the art pipeline lands.
+- [ ] Tile-based world from a real tilemap (Tiled JSON) + R2-hosted art; expand the open world
+- [ ] Character select (Trik / Stego / Brachiosaurus) with distinct abilities
+- [ ] Puzzle/learning game framework — reusable shell (load, win/lose, reward) for many mini-games
+- [ ] First puzzle games (e.g., counting, matching, sequencing, simple logic) wired to progress
+- [ ] Save game state per child (position, unlocked areas, collected items) to Neon
+- [ ] 3D set-pieces for select scenes (later; evaluate react-three-fiber / Three.js)
+- [ ] Persist game-based learning outcomes into the same progress/badges system
+
+## PHASE 3 — Module: Gamified Learning & Progression (quizzes = minor)
 
 - [x] Quiz engine + question schema (`quiz_questions` table) + seed (`db:seed`). `/learn` lists
       quizzes; `/learn/[quizId]` is an interactive player with per-answer feedback. Verified renders.

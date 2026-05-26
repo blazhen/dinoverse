@@ -43,11 +43,14 @@ export default function Home() {
       </div>
 
       <div className="flex gap-4 text-sm font-semibold text-emerald-600">
+        <Link href="/games" className="hover:underline">
+          🎮 Play games
+        </Link>
         <Link href="/feed" className="hover:underline">
           ▶ Watch the feed
         </Link>
         <Link href="/learn" className="hover:underline">
-          🦕 Learn &amp; play
+          🧠 Quizzes
         </Link>
       </div>
     </main>
