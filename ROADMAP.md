@@ -95,18 +95,25 @@ Last updated: 2026-05-23
 ## ⭐ PHASE G — GAMES (PRODUCT CORE)
 
 > The heart of the product. Built on Phaser.js. Quizzes (Phase 3) are a *minor* learning-game type.
+> **Vision:** two layers — top-down open-world HUB (FATE-flavored) → side-scrolling co-op
+> puzzle-platformer EXPEDITIONS (Greak-flavored), 3 switchable dino party members, learning-driven
+> progression, gentle/non-violent, hand-drawn warmth.
 
 - [x] Phaser integrated into Next.js (client-only dynamic load); `/games` hub.
-- [x] **Open-world 2D explorer** ("Explore Dino City"): top-down movement (WASD/arrows), camera
-      follow, collidable buildings, collectible learning items. `/games/explore`. Asset-free seed
-      (procedural shapes/emoji) until the art pipeline lands.
-- [ ] Tile-based world from a real tilemap (Tiled JSON) + R2-hosted art; expand the open world
-- [ ] Character select (Trik / Stego / Brachiosaurus) with distinct abilities
-- [ ] Puzzle/learning game framework — reusable shell (load, win/lose, reward) for many mini-games
-- [ ] First puzzle games (e.g., counting, matching, sequencing, simple logic) wired to progress
-- [ ] Save game state per child (position, unlocked areas, collected items) to Neon
+- [x] **Top-down hub seed** ("Explore Dino City"): movement, camera follow, collidable buildings,
+      collectibles. `/games/explore`. Becomes the overworld HUB.
+- [~] **Side-scroll platformer expedition** (Greak core): run/jump/dodge/crawl + platforms/hazards.
+      `/games/expedition`. Asset-free prototype first; character-switching + abilities next.
+- [ ] Character switching: control Trik / Stego / Brachiosaurus, each with a distinct ability;
+      "mimic"/"regroup" multi-character control (Greak-style) → also co-op (two kids, two dinos)
+- [ ] Companion pets + light RPG progression (FATE-flavored) in the hub
+- [ ] Learning-driven progression: solve puzzle → unlock ability/area (learning = progression engine)
+- [ ] Assist mode for ages 5–7 (no fall-deaths, forgiving timing); full challenge for 10–14
+- [ ] Tile-based worlds from Tiled JSON + R2-hosted art; expand the world
+- [ ] Reusable puzzle/learning mini-game shell (React/DOM for simple puzzles)
+- [ ] Save game state per child (position, unlocked areas, abilities, collectibles) to Neon
+- [ ] Persist game-based learning outcomes into the shared progress/badges system
 - [ ] 3D set-pieces for select scenes (later; evaluate react-three-fiber / Three.js)
-- [ ] Persist game-based learning outcomes into the same progress/badges system
 
 ## PHASE 3 — Module: Gamified Learning & Progression (quizzes = minor)
 

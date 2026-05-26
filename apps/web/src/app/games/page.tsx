@@ -12,10 +12,17 @@ interface GameCard {
 
 const games: GameCard[] = [
   {
-    href: '/games/explore',
+    href: '/games/expedition',
     emoji: '🦖',
+    title: 'Dino Expedition',
+    blurb: 'Run, jump, dash and crawl through a side-scrolling adventure. Collect gems, reach the nest!',
+    tag: 'Platformer',
+  },
+  {
+    href: '/games/explore',
+    emoji: '🗺️',
     title: 'Explore Dino City',
-    blurb: 'Walk around the open world and find hidden eggs full of dino facts.',
+    blurb: 'Roam the open-world hub and find hidden eggs full of dino facts.',
     tag: 'Open world',
   },
   {
