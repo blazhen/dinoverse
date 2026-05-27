@@ -101,8 +101,9 @@ class ExpeditionScene extends Phaser.Scene {
   private levelStartAt = 0;
   private invulnUntil = 0;
   private persist = false;
-  private moversList: { rect: Phaser.GameObjects.Rectangle; axis: 'x' | 'y'; origin: number; range: number; prev: number }[] = [];
+  private moversList: { rect: Phaser.GameObjects.Rectangle; axis: 'x' | 'y'; origin: number; range: number }[] = [];
   private hazardsGroup!: Phaser.Physics.Arcade.Group;
+  private bouncersGroup!: Phaser.Physics.Arcade.Group;
   private touch = { left: false, right: false, down: false, jumpDown: false, jumpPressed: false, abilityPressed: false };
 
   constructor() {
@@ -183,11 +184,19 @@ class ExpeditionScene extends Phaser.Scene {
       body.setImmovable(true);
       if (m.axis === 'x') {
         body.setVelocityX(m.speed);
-        this.moversList.push({ rect, axis: 'x', origin: m.x, range: m.range, prev: m.x });
+        this.moversList.push({ rect, axis: 'x', origin: m.x, range: m.range });
       } else {
         body.setVelocityY(-m.speed);
-        this.moversList.push({ rect, axis: 'y', origin: m.y, range: m.range, prev: m.y });
+        this.moversList.push({ rect, axis: 'y', origin: m.y, range: m.range });
       }
+    }
+
+    // Bounce pads (spring you up when you land on them).
+    this.bouncersGroup = this.physics.add.group({ allowGravity: false, immovable: true });
+    for (const b of spec.bouncers) {
+      this.bouncersGroup.add(
+        this.add.rectangle(b.x, b.y, 70, 18, 0xfbbf24).setStrokeStyle(3, 0xb45309),
+      );
     }
 
     // Hazards (gentle: bump you back, never kill).
@@ -262,6 +271,15 @@ class ExpeditionScene extends Phaser.Scene {
     this.physics.add.overlap(this.box, this.goal, () => this.win());
     for (const m of this.moversList) this.physics.add.collider(this.box, m.rect);
     this.physics.add.overlap(this.box, this.hazardsGroup, () => this.onHazard());
+    this.physics.add.overlap(this.box, this.bouncersGroup, (_b, pad) => {
+      const body = this.box.body as Body;
+      const p = pad as Phaser.GameObjects.Rectangle;
+      // Only spring when coming down onto the pad.
+      if (body.velocity.y >= -50 && this.box.y < p.y) {
+        body.setVelocityY(-760);
+        this.puff(p.x, p.y - 10);
+      }
+    });
 
     this.levelStartAt = this.time.now;
     this.setbacks = 0;
@@ -414,8 +432,10 @@ class ExpeditionScene extends Phaser.Scene {
     const timeSec = (this.time.now - this.levelStartAt) / 1000;
     const expected = this.spec.worldW / 170; // rough par time in seconds
     const struggled = this.setbacks >= 2 || timeSec > expected * 1.8;
+    const reallyStruggled = this.setbacks >= 4 || timeSec > expected * 2.6;
     const aced = this.setbacks === 0 && timeSec < expected * 1.15;
-    this.nextDifficulty = Phaser.Math.Clamp(this.difficulty + (aced ? 1 : struggled ? -1 : 0), 1, 10);
+    const delta = aced ? 1 : reallyStruggled ? -2 : struggled ? -1 : 0;
+    this.nextDifficulty = Phaser.Math.Clamp(this.difficulty + delta, 1, 10);
     saveStoredDifficulty(this.nextDifficulty);
 
     // Persist to the DB for the signed-in child (fire-and-forget).
@@ -427,7 +447,15 @@ class ExpeditionScene extends Phaser.Scene {
       }).catch(() => {});
     }
 
-    this.banner.setText(`🎉 Level ${this.level} complete!   💎 ${this.gems}/${this.totalGems}\nTap / Space for the next level ▶`).setAlpha(1);
+    const diffMsg =
+      this.nextDifficulty > this.difficulty
+        ? '   Difficulty ↑'
+        : this.nextDifficulty < this.difficulty
+          ? '   Difficulty ↓ (easier)'
+          : '';
+    this.banner
+      .setText(`🎉 Level ${this.level} complete!   💎 ${this.gems}/${this.totalGems}${diffMsg}\nTap / Space for the next level ▶`)
+      .setAlpha(1);
 
     const btn = this.add
       .text(VIEW_W / 2, VIEW_H * 0.55, '  Next level ▶  ', { fontSize: '22px', color: '#065f46', backgroundColor: '#ffffff', padding: { x: 18, y: 12 }, fontStyle: 'bold' })
@@ -458,7 +486,7 @@ class ExpeditionScene extends Phaser.Scene {
       return;
     }
 
-    const onGround = body.blocked.down;
+    const onGround = body.blocked.down || body.touching.down; // touching.down: true on moving platforms too
     if (onGround) this.lastGroundedAt = time;
     if (onGround && !this.wasGrounded) this.puff(this.box.x, this.box.y + NORMAL_H / 2);
     this.wasGrounded = onGround;
@@ -514,35 +542,26 @@ class ExpeditionScene extends Phaser.Scene {
     }
     if (time < this.dashEndAt) this.smash(); // dash-smash cracked blocks in the way
 
-    // Moving platforms: bounce within range, and carry the rider by the platform's exact
-    // movement (position-based, so there's no velocity slip / treadmill feel).
+    // Moving platforms: bounce within range; carry the rider by matching the platform's
+    // velocity. Standing on a *moving* (dynamic) platform sets touching.down, NOT blocked.down
+    // — checking the wrong one was the treadmill bug. Vertical movers are carried by the
+    // collision push (going up) and gravity (coming down), so no manual carry there.
     for (const m of this.moversList) {
       const mb = m.rect.body as Body;
       if (m.axis === 'x') {
         if (m.rect.x <= m.origin && mb.velocity.x < 0) mb.setVelocityX(Math.abs(mb.velocity.x));
         else if (m.rect.x >= m.origin + m.range && mb.velocity.x > 0) mb.setVelocityX(-Math.abs(mb.velocity.x));
+
+        const onTop =
+          (body.touching.down || body.blocked.down) &&
+          this.box.y < m.rect.y &&
+          Math.abs(body.bottom - mb.top) < 12 &&
+          Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2;
+        if (onTop) body.setVelocityX(body.velocity.x + mb.velocity.x);
       } else {
         if (m.rect.y >= m.origin && mb.velocity.y > 0) mb.setVelocityY(-Math.abs(mb.velocity.y));
         else if (m.rect.y <= m.origin - m.range && mb.velocity.y < 0) mb.setVelocityY(Math.abs(mb.velocity.y));
       }
-      const cur = m.axis === 'x' ? m.rect.x : m.rect.y;
-      const delta = cur - m.prev;
-      const onTop =
-        body.blocked.down &&
-        this.box.y < m.rect.y &&
-        Math.abs(body.bottom - mb.top) < 10 &&
-        Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2;
-      if (onTop && delta !== 0) {
-        if (m.axis === 'x') {
-          this.box.x += delta;
-          body.x += delta;
-        } else if (delta > 0) {
-          // descending: carry the player down (ascent is handled by the collision push)
-          this.box.y += delta;
-          body.y += delta;
-        }
-      }
-      m.prev = cur;
     }
 
     this.sprite.setPosition(this.box.x, this.box.y + (this.crawling ? 8 : 0));

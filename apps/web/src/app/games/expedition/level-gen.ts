@@ -38,6 +38,10 @@ export interface HazardSpec {
   x: number;
   y: number;
 }
+export interface BouncerSpec {
+  x: number;
+  y: number;
+}
 export interface LevelSpec {
   level: number;
   difficulty: number;
@@ -48,6 +52,7 @@ export interface LevelSpec {
   gems: GemSpec[];
   movers: MoverSpec[];
   hazards: HazardSpec[];
+  bouncers: BouncerSpec[];
   goal: { x: number; y: number };
 }
 
@@ -58,6 +63,7 @@ interface Chunk {
   breakables: BoxSpec[];
   movers: MoverSpec[];
   hazards: HazardSpec[];
+  bouncers: BouncerSpec[];
 }
 
 const GT = GROUND_TOP;
@@ -70,6 +76,7 @@ const empty = (width: number, partial: Partial<Chunk> = {}): Chunk => ({
   breakables: [],
   movers: [],
   hazards: [],
+  bouncers: [],
   ...partial,
 });
 
@@ -141,6 +148,13 @@ const CHUNKS: Record<string, (x: number, d: number) => Chunk> = {
       movers: [{ x: x + 110, y: GT - 55, w: 90, axis: 'y', range: 190, speed: 42 + d * 7 }],
       gems: [{ x: x + 110, y: GT - 225 }, { x: x + 250, y: GT - 275 }],
     }),
+
+  // Bounce pad: land on it to spring high up to a gem.
+  bouncePad: (x) =>
+    empty(300, {
+      bouncers: [{ x: x + 150, y: GT - 12 }],
+      gems: [{ x: x + 150, y: GT - 150 }, { x: x + 150, y: GT - 230 }],
+    }),
 };
 
 function mulberry32(seed: number): () => number {
@@ -158,7 +172,7 @@ export function generateLevel(level: number, difficulty?: number): LevelSpec {
 
   const pool = ['flat', 'stepUpGem', 'gemArc', 'crackedBlock'];
   if (d >= 3) pool.push('gapPlatforms', 'hazardRow', 'pillars');
-  if (d >= 4) pool.push('crawlTunnel', 'elevator');
+  if (d >= 4) pool.push('crawlTunnel', 'elevator', 'bouncePad');
   if (d >= 5) pool.push('staircaseHighGem', 'movingBridge');
   if (d >= 7) pool.push('movingBridge', 'elevator', 'hazardRow'); // weight harder chunks more
 
@@ -169,6 +183,7 @@ export function generateLevel(level: number, difficulty?: number): LevelSpec {
   const breakables: BoxSpec[] = [];
   const movers: MoverSpec[] = [];
   const hazards: HazardSpec[] = [];
+  const bouncers: BouncerSpec[] = [];
 
   let x = 140;
   for (let i = 0; i < count; i++) {
@@ -179,6 +194,7 @@ export function generateLevel(level: number, difficulty?: number): LevelSpec {
     breakables.push(...chunk.breakables);
     movers.push(...chunk.movers);
     hazards.push(...chunk.hazards);
+    bouncers.push(...chunk.bouncers);
     x += chunk.width + 60;
   }
 
@@ -186,5 +202,5 @@ export function generateLevel(level: number, difficulty?: number): LevelSpec {
   const goal = { x, y: GT - 24 };
   const worldW = x + 220;
 
-  return { level, difficulty: d, worldW, spawn: { x: 90, y: GT - 80 }, solids, breakables, gems, movers, hazards, goal };
+  return { level, difficulty: d, worldW, spawn: { x: 90, y: GT - 80 }, solids, breakables, gems, movers, hazards, bouncers, goal };
 }
