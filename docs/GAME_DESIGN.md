@@ -15,16 +15,17 @@ Hub (Dino City) → enter a level → traverse with platforming + the 3 dinos' a
 (unlock an ability / area / cosmetic) → back to hub → next level.
 
 ## Pillars (the things that make it *ours*)
-1. **Three switchable dinos, each with one signature ability** — puzzles require all three.
-2. **Solo = ONE character; co-op = one dino per player.** (Revised 2026-05-27 — simpler for kids.)
-   In single-player you **pick one dino** and play the whole level as it (Mario-style); no party
-   management/switching/follow. The three dinos are **selectable characters** and become the
-   players in co-op multiplayer. Solo levels are beatable by any dino; each dino's ability opens
-   **optional bonus** areas. (Co-op levels that *require* multiple abilities are a later, separate
-   design.)
-3. **Learning is the progression engine** — you unlock abilities/areas by completing the learning
-   challenges baked into puzzles (feeds the existing per-child progress system).
-4. **Gentle & warm** — Pixar tone, non-violent, hand-drawn art target.
+1. **Pick one dino, never switch.** (Revised 2026-05-27.) You choose a dino and play as it. In
+   **solo all three play identically** — the choice is cosmetic/identity, so a 5-year-old never has
+   to manage a party or decide "which dino do I need here." No switching, no follow, no party.
+2. **Signature abilities live in MULTIPLAYER, one per player.** (Revised 2026-05-27.) In co-op
+   (3–4 friends) each player **is** one dino and uses *its* signature ability — Trik dash-boost,
+   Stego shield, Brachio reach. One ability per player, still no switching. This is where the
+   per-dino identity actually pays off, and it's the source of the friendly co-op/race dynamics.
+3. **Learning is the progression engine** — you unlock areas/cosmetics/abilities by completing the
+   learning challenges baked into puzzles (feeds the existing per-child progress system).
+4. **Gentle & warm** — Pixar tone, non-violent, hand-drawn art target. Multiplayer mischief is
+   playful (Mario-Kart-style items), never combat.
 
 ## Characters & abilities (locked)
 | Dino | Personality (brief) | Signature ability |
@@ -34,8 +35,13 @@ Hub (Dino City) → enter a level → traverse with platforming + the 3 dinos' a
 | **Brachiosaurus** | gentle giant, science-loving | **High reach** — high jump / reach high ledges & switches |
 
 ## Controls
-- **Move** ←/→ (A/D) · **Jump** ↑/Space · **Ability** Shift · **Crawl** ↓ · **Switch** 1/2/3 (or Q).
-- Mobile (later): on-screen d-pad + ability/jump buttons.
+- **Move** ←/→ (A/D) · **Jump** ↑/Space · **Ability** Shift · **Crawl** ↓. (No "switch" — see Pillar 1.)
+- **The special control is the Ability button** (Shift on keyboard, ⚡ on touch) — the one input that
+  makes us *us*. In solo it does the same thing for everyone; in co-op it's your dino's signature.
+- Mobile/tablet (ages 5–15): on-screen buttons, **auto-sized by the child's age band** (younger =
+  bigger, more forgiving targets) + Android-web haptic taps. *Done.* **Next:** swipe-up-to-jump and
+  an auto-run "assist mode" for ages 5–7. Research-backed (kids <10 have limited fine-motor aim;
+  Mario Kart's auto-assist is the model for spanning 5→15 in one game).
 - Feel target: **Mario-tight** (responsive, forgiving coyote-time), not floaty.
 
 ## Audience & age tiers (5–14)
@@ -43,6 +49,27 @@ Hub (Dino City) → enter a level → traverse with platforming + the 3 dinos' a
   timing, slower hazards.
 - **8–11:** full switch-and-split puzzles.
 - **12–14:** harder puzzles, more ability combos, co-op challenge levels.
+
+## Multiplayer — the co-op vision (added 2026-05-27)
+**3–4 friends play together, friends-only, safe.** This is where per-dino abilities and friendly
+items come alive.
+- **Group size:** up to 3–4 friends per room.
+- **First multiplayer mode = a Dino Dash *race*** (not the puzzle-platformer). Everyone auto-runs
+  forward; you see each other; you grab pickups and use them. We pick the runner first because the
+  netcode is far simpler (all moving one direction; items are simple events) and it directly matches
+  "running together." Co-op *puzzle-platformer* (tight physics sync) is a harder, later mode.
+- **Each friend is one dino** → that dino's **signature ability** is their match power (no switching):
+  Trik = dash-boost, Stego = shield (block an incoming item / protect a teammate), Brachio = reach
+  (grab high pickups). One ability per player.
+- **Friendly items, not combat** (Mario-Kart-for-kids): bubble-trap (brief), slow-goo, magnet,
+  speed-boost. Nobody takes damage; nobody is eliminated — worst case you slow down. Keeps Pillar 4.
+- **Cross-age in one race:** auto-run + **steering/lane assist for ages 5–7** so a 5-year-old and a
+  14-year-old can play the same race (Mario Kart 8's auto-steer model). Item chaos keeps it fun for
+  the older kids.
+- **Safety (non-negotiable):** **friends-only invite-code rooms** (no random matchmaking with
+  strangers), **no free-form chat** (preset emotes/reactions only), parent-visible activity. COPPA/
+  GDPR-K first.
+- **Stack:** Colyseus on Railway (authoritative room/state server) — the previously-planned path.
 
 ## Tech stack (locked 2026-05-27)
 **Web-first, one codebase, shipped to iOS/Android via Capacitor; playable on web/PWA too.**
@@ -61,7 +88,9 @@ set-pieces, much later.
 ## Non-goals (explicit scope cuts — say no to protect the core)
 - ❌ Combat-focused metroidvania (Hollow Knight was a *look* reference, not the genre).
 - ❌ Top-down loot/ARPG systems (FATE was a *hub-feel* reference only).
-- ❌ Free-form chat, PvP, or aggressive/gacha monetization.
+- ❌ Free-form chat, **combat** PvP, or aggressive/gacha monetization. (Amended 2026-05-27:
+  **friendly, non-violent item interference** in friends-only co-op races — Mario-Kart-style:
+  bubble-trap, slow-goo, speed-boost; nobody takes damage or is eliminated — IS in scope.)
 - ❌ One giant interconnected map for v1 — use **discrete levels + a hub**.
 - ❌ 3D for v1. Quizzes stay a **minor** side-game, not the focus.
 

@@ -104,11 +104,14 @@ Last updated: 2026-05-23
       collectibles. `/games/explore`. Becomes the overworld HUB.
 - [~] **Side-scroll platformer expedition** (Greak core): run/jump/dodge/crawl + platforms/hazards.
       `/games/expedition`. Asset-free prototype first; character-switching + abilities next.
-- [ ] Character switching: control Trik / Stego / Brachiosaurus, each with a distinct ability;
-      "mimic"/"regroup" multi-character control (Greak-style) → also co-op (two kids, two dinos)
+- [x] **DECIDED 2026-05-27: no dino-switching.** Pick one dino; in solo all three play identically
+      (cosmetic). Per-dino **signature abilities moved to multiplayer** (one dino per player) — see
+      Phase 4 + GAME_DESIGN.md Pillars 1–2.
 - [ ] Companion pets + light RPG progression (FATE-flavored) in the hub
-- [ ] Learning-driven progression: solve puzzle → unlock ability/area (learning = progression engine)
-- [ ] Assist mode for ages 5–7 (no fall-deaths, forgiving timing); full challenge for 10–14
+- [ ] Learning-driven progression: solve puzzle → unlock area/cosmetic (learning = progression engine)
+- [~] **Mobile/tablet controls for ages 5–15:** age-scaled, bigger/forgiving touch buttons +
+      Android-web haptics — *done*. **Next:** swipe-up-to-jump; **assist mode for 5–7** (auto-run,
+      no fall-deaths, forgiving timing); full challenge for 12–14.
 - [ ] Tile-based worlds from Tiled JSON + R2-hosted art; expand the world
 - [ ] Reusable puzzle/learning mini-game shell (React/DOM for simple puzzles)
 - [ ] Save game state per child (position, unlocked areas, abilities, collectibles) to Neon
@@ -134,11 +137,20 @@ Last updated: 2026-05-23
 
 ## PHASE 4 — Module: Safe Multiplayer Rooms
 
-- [ ] Co-op puzzle lobby (Phaser.js client)
-- [ ] Real-time room/state server (Colyseus on Railway)
-- [ ] **Preset-only** child-safe communication strings (no free-form chat)
-- [ ] Matchmaking / room lifecycle / reconnection handling
+> **Vision (2026-05-27):** 3–4 friends, friends-only. **First mode = a Dino Dash *race*** (simplest
+> netcode, matches "running together"), each friend = one dino with its **signature ability**, plus
+> **friendly Mario-Kart-style items** (bubble/goo/boost — no combat, no elimination). Cross-age via
+> auto-run + steering assist for 5–7. See GAME_DESIGN.md "Multiplayer".
+
+- [ ] Real-time room/state server (Colyseus on Railway) — authoritative state, client prediction
+- [ ] **Friends-only invite-code rooms** (NO random matchmaking with strangers); room lifecycle + reconnect
+- [ ] Dino Dash multiplayer race: position sync, shared track, finish/ranking
+- [ ] Per-dino signature ability in-match (dash-boost / shield / reach) — one per player, no switching
+- [ ] Friendly item system (pick-up + use; bubble-trap, slow-goo, magnet, speed-boost; non-violent)
+- [ ] Steering/lane **assist for ages 5–7** so 5→15 can race together (Mario-Kart-8 model)
+- [ ] **Preset-only** child-safe communication (emotes/reactions; no free-form chat)
 - [ ] Anti-abuse + parental visibility into multiplayer activity
+- [ ] (Later) Co-op puzzle-platformer mode (tight physics sync — harder; after the race ships)
 
 ## PHASE 5 — Module: Parent Dashboard
 

@@ -17,13 +17,17 @@ export function GameCanvas() {
     let cancelled = false;
 
     void (async () => {
-      // Load this child's saved difficulty (if a kid is signed in / selected).
-      let opts: { difficulty?: number; persist?: boolean } = {};
+      // Load this child's saved difficulty + age band (if a kid is signed in / selected).
+      let opts: { difficulty?: number; persist?: boolean; ageBand?: string } = {};
       try {
         const res = await fetch('/api/game/progress');
         if (res.ok) {
           const data = await res.json();
-          opts = { difficulty: data?.progress?.difficulty, persist: Boolean(data?.child) };
+          opts = {
+            difficulty: data?.progress?.difficulty,
+            persist: Boolean(data?.child),
+            ageBand: data?.child?.ageBand,
+          };
         }
       } catch {
         // offline / not signed in → fall back to localStorage in the scene

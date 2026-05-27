@@ -48,6 +48,7 @@ interface InitData {
 interface BootOpts {
   difficulty?: number;
   persist?: boolean; // true when an active child is signed in → save to the DB
+  ageBand?: string; // drives touch-control sizing: younger kids get bigger, more forgiving buttons
 }
 let BOOT: BootOpts = {};
 
@@ -315,6 +316,8 @@ class ExpeditionScene extends Phaser.Scene {
     this.add.text(x, y, label, { fontSize: `${Math.round(r)}px` }).setOrigin(0.5).setScrollFactor(0).setDepth(21);
     const press = () => {
       c.setFillStyle(0xffffff, 0.42);
+      // Android-web haptic tap (no-op on iOS/desktop; Capacitor Haptics covers iOS later).
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') navigator.vibrate(8);
       h.onDown?.();
       h.onPress?.();
     };
@@ -329,18 +332,32 @@ class ExpeditionScene extends Phaser.Scene {
   }
 
   private createTouchControls() {
-    const bottom = VIEW_H - 96;
-    this.touchButton(108, bottom, 48, '◀', { onDown: () => (this.touch.left = true), onUp: () => (this.touch.left = false) });
-    this.touchButton(234, bottom, 48, '▶', { onDown: () => (this.touch.right = true), onUp: () => (this.touch.right = false) });
-    this.touchButton(VIEW_W - 112, bottom, 56, '▲', {
+    // Younger kids have less fine-motor precision → bigger, more forgiving buttons.
+    // Positions are derived from the radii so nothing overlaps at any scale.
+    const band = BOOT.ageBand ?? '';
+    const k = band === '5-6' || band === '7-8' ? 1.3 : band === '9-10' || band === '11-12' ? 1.12 : 1;
+    const moveR = Math.round(54 * k);
+    const downR = Math.round(48 * k);
+    const jumpR = Math.round(74 * k); // jump is the primary action → biggest target
+    const abilR = Math.round(60 * k);
+    const bottom = VIEW_H - jumpR - 22;
+
+    // Left: move pad.
+    const leftX = moveR + 26;
+    this.touchButton(leftX, bottom, moveR, '◀', { onDown: () => (this.touch.left = true), onUp: () => (this.touch.left = false) });
+    this.touchButton(leftX + 2 * moveR + 22, bottom, moveR, '▶', { onDown: () => (this.touch.right = true), onUp: () => (this.touch.right = false) });
+
+    // Right: jump (primary) with crouch beside it and the ⚡ ability above.
+    const jumpX = VIEW_W - jumpR - 26;
+    this.touchButton(jumpX, bottom, jumpR, '▲', {
       onDown: () => {
         this.touch.jumpDown = true;
         this.touch.jumpPressed = true;
       },
       onUp: () => (this.touch.jumpDown = false),
     });
-    this.touchButton(VIEW_W - 246, bottom, 44, '▼', { onDown: () => (this.touch.down = true), onUp: () => (this.touch.down = false) });
-    this.touchButton(VIEW_W - 150, bottom - 142, 46, '⚡', { onPress: () => (this.touch.abilityPressed = true) });
+    this.touchButton(jumpX - jumpR - downR - 22, bottom, downR, '▼', { onDown: () => (this.touch.down = true), onUp: () => (this.touch.down = false) });
+    this.touchButton(jumpX, bottom - jumpR - abilR - 18, abilR, '⚡', { onPress: () => (this.touch.abilityPressed = true) });
   }
 
   // ─── Helpers ─────────────────────────────────────────────────
