@@ -1,6 +1,8 @@
 // Seeded, chunk-based procedural level generator.
 // Levels are built by stitching hand-authored "chunks" left-to-right on continuous ground,
-// so every generated level is guaranteed traversable. Difficulty scales with the level number.
+// so every generated level is guaranteed traversable. A `difficulty` value (1..10) controls
+// which chunks appear, how many hazards, and how fast moving platforms go — separate from the
+// level number, so adaptive difficulty can make a struggling kid's levels gentler.
 
 export const GROUND_TOP = 540;
 export const WORLD_H = 720;
@@ -23,13 +25,28 @@ export interface GemSpec {
   x: number;
   y: number;
 }
+/** Horizontal moving platform: oscillates x in [x, x+range] at `speed` px/s. */
+export interface MoverSpec {
+  x: number;
+  y: number;
+  w: number;
+  range: number;
+  speed: number;
+}
+export interface HazardSpec {
+  x: number;
+  y: number;
+}
 export interface LevelSpec {
   level: number;
+  difficulty: number;
   worldW: number;
   spawn: { x: number; y: number };
   solids: RectSpec[];
   breakables: BoxSpec[];
   gems: GemSpec[];
+  movers: MoverSpec[];
+  hazards: HazardSpec[];
   goal: { x: number; y: number };
 }
 
@@ -38,83 +55,80 @@ interface Chunk {
   solids: RectSpec[];
   gems: GemSpec[];
   breakables: BoxSpec[];
+  movers: MoverSpec[];
+  hazards: HazardSpec[];
 }
 
 const GT = GROUND_TOP;
-const plat = (x: number, y: number, w: number): RectSpec => ({
-  x,
-  y,
-  w,
-  h: 22,
-  fill: 0x65a30d,
-  stroke: 0x4d7c0f,
-});
-const over = (x: number, y: number, w: number, h: number): RectSpec => ({
-  x,
-  y,
-  w,
-  h,
-  fill: 0x7c2d12,
-  stroke: 0x5b2110,
+const plat = (x: number, y: number, w: number): RectSpec => ({ x, y, w, h: 22, fill: 0x65a30d, stroke: 0x4d7c0f });
+const over = (x: number, y: number, w: number, h: number): RectSpec => ({ x, y, w, h, fill: 0x7c2d12, stroke: 0x5b2110 });
+const empty = (width: number, partial: Partial<Chunk> = {}): Chunk => ({
+  width,
+  solids: [],
+  gems: [],
+  breakables: [],
+  movers: [],
+  hazards: [],
+  ...partial,
 });
 
-// Each chunk places content above a continuous ground at GROUND_TOP. All gaps/steps are
-// within a single jump, and crawl tunnels are passable by any dino — so any sequence is fair.
-const CHUNKS: Record<string, (x: number) => Chunk> = {
-  flat: (x) => ({ width: 280, solids: [], breakables: [], gems: [{ x: x + 140, y: GT - 40 }] }),
+// `d` = difficulty (affects mover speed and hazard count where relevant).
+const CHUNKS: Record<string, (x: number, d: number) => Chunk> = {
+  flat: (x) => empty(280, { gems: [{ x: x + 140, y: GT - 40 }] }),
 
-  stepUpGem: (x) => ({
-    width: 360,
-    solids: [plat(x + 90, GT - 70, 120), plat(x + 250, GT - 128, 120)],
-    breakables: [],
-    gems: [
-      { x: x + 90, y: GT - 110 },
-      { x: x + 250, y: GT - 168 },
-    ],
-  }),
+  stepUpGem: (x) =>
+    empty(360, {
+      solids: [plat(x + 90, GT - 70, 120), plat(x + 250, GT - 128, 120)],
+      gems: [{ x: x + 90, y: GT - 110 }, { x: x + 250, y: GT - 168 }],
+    }),
 
-  gemArc: (x) => ({
-    width: 300,
-    solids: [plat(x + 150, GT - 80, 150)],
-    breakables: [],
-    gems: [
-      { x: x + 110, y: GT - 120 },
-      { x: x + 150, y: GT - 145 },
-      { x: x + 190, y: GT - 120 },
-    ],
-  }),
+  gemArc: (x) =>
+    empty(300, {
+      solids: [plat(x + 150, GT - 80, 150)],
+      gems: [{ x: x + 110, y: GT - 120 }, { x: x + 150, y: GT - 145 }, { x: x + 190, y: GT - 120 }],
+    }),
 
-  crackedBlock: (x) => ({
-    width: 250,
-    solids: [],
-    breakables: [{ x: x + 110, y: GT - 35, w: 40, h: 70 }],
-    gems: [{ x: x + 175, y: GT - 30 }],
-  }),
+  crackedBlock: (x) =>
+    empty(250, {
+      breakables: [{ x: x + 110, y: GT - 35, w: 40, h: 70 }],
+      gems: [{ x: x + 175, y: GT - 30 }],
+    }),
 
-  gapPlatforms: (x) => ({
-    width: 420,
-    solids: [plat(x + 80, GT - 110, 120), plat(x + 320, GT - 110, 120)],
-    breakables: [],
-    gems: [{ x: x + 320, y: GT - 150 }],
-  }),
+  gapPlatforms: (x) =>
+    empty(420, {
+      solids: [plat(x + 80, GT - 110, 120), plat(x + 320, GT - 110, 120)],
+      gems: [{ x: x + 320, y: GT - 150 }],
+    }),
 
-  crawlTunnel: (x) => ({
-    width: 330,
-    // Tall overhang (top at GT-240) so you can't jump over — everyone crawls the 30px gap under it.
-    solids: [over(x + 150, GT - 135, 180, 210)],
-    breakables: [],
-    gems: [{ x: x + 280, y: GT - 40 }],
-  }),
+  crawlTunnel: (x) =>
+    empty(330, {
+      solids: [over(x + 150, GT - 135, 180, 210)],
+      gems: [{ x: x + 280, y: GT - 40 }],
+    }),
 
-  staircaseHighGem: (x) => ({
-    width: 430,
-    solids: [plat(x + 80, GT - 85, 110), plat(x + 210, GT - 160, 110), plat(x + 340, GT - 235, 120)],
-    breakables: [],
-    gems: [{ x: x + 340, y: GT - 275 }],
-  }),
+  staircaseHighGem: (x) =>
+    empty(430, {
+      solids: [plat(x + 80, GT - 85, 110), plat(x + 210, GT - 160, 110), plat(x + 340, GT - 235, 120)],
+      gems: [{ x: x + 340, y: GT - 275 }],
+    }),
+
+  // Jump over a few cacti, or you get gently bumped back.
+  hazardRow: (x, d) =>
+    empty(320, {
+      hazards: d >= 5 ? [{ x: x + 80, y: GT - 22 }, { x: x + 160, y: GT - 22 }, { x: x + 240, y: GT - 22 }] : [{ x: x + 110, y: GT - 22 }, { x: x + 200, y: GT - 22 }],
+      gems: [{ x: x + 160, y: GT - 95 }],
+    }),
+
+  // Ride a moving platform across a hazard pit (faster platform at higher difficulty).
+  movingBridge: (x, d) =>
+    empty(500, {
+      solids: [plat(x + 55, GT - 120, 100), plat(x + 430, GT - 120, 100)],
+      movers: [{ x: x + 150, y: GT - 120, w: 90, range: 190, speed: 70 + d * 14 }],
+      hazards: [{ x: x + 200, y: GT - 22 }, { x: x + 270, y: GT - 22 }, { x: x + 340, y: GT - 22 }],
+      gems: [{ x: x + 430, y: GT - 160 }],
+    }),
 };
 
-/** Tiny seeded PRNG (mulberry32) so a level number always yields the same level. */
 function mulberry32(seed: number): () => number {
   return function () {
     seed = (seed + 0x6d2b79f5) | 0;
@@ -124,34 +138,40 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-export function generateLevel(level: number): LevelSpec {
-  const rng = mulberry32(((level * 2654435761) >>> 0) ^ 0x9e3779b9);
+export function generateLevel(level: number, difficulty?: number): LevelSpec {
+  const d = Math.max(1, Math.min(10, difficulty ?? level));
+  const rng = mulberry32((((level * 73856093) ^ (d * 19349663)) >>> 0) ^ 0x9e3779b9);
 
-  const easy = ['flat', 'stepUpGem', 'gemArc', 'crackedBlock'];
-  const medium = [...easy, 'gapPlatforms', 'crawlTunnel'];
-  const hard = [...medium, 'staircaseHighGem'];
-  const pool = level <= 2 ? easy : level <= 4 ? medium : hard;
+  // Chunk pool widens with difficulty.
+  const pool = ['flat', 'stepUpGem', 'gemArc', 'crackedBlock'];
+  if (d >= 3) pool.push('gapPlatforms', 'hazardRow');
+  if (d >= 4) pool.push('crawlTunnel');
+  if (d >= 5) pool.push('staircaseHighGem', 'movingBridge');
+  if (d >= 7) pool.push('hazardRow', 'movingBridge'); // weight harder chunks more
 
-  const count = Math.min(4 + level, 11);
+  const count = Math.min(4 + level, 12);
 
   const solids: RectSpec[] = [];
   const gems: GemSpec[] = [];
   const breakables: BoxSpec[] = [];
+  const movers: MoverSpec[] = [];
+  const hazards: HazardSpec[] = [];
 
-  let x = 140; // clear start area (spawn is at x=90)
+  let x = 140; // clear start area (spawn at x=90)
   for (let i = 0; i < count; i++) {
-    // First chunk is always flat so you ease in.
     const key = i === 0 ? 'flat' : (pool[Math.floor(rng() * pool.length)] ?? 'flat');
-    const chunk = CHUNKS[key]!(x);
+    const chunk = CHUNKS[key]!(x, d);
     solids.push(...chunk.solids);
     gems.push(...chunk.gems);
     breakables.push(...chunk.breakables);
-    x += chunk.width + 60; // spacing between chunks
+    movers.push(...chunk.movers);
+    hazards.push(...chunk.hazards);
+    x += chunk.width + 60;
   }
 
-  x += 160; // run-up to the goal
+  x += 160;
   const goal = { x, y: GT - 24 };
   const worldW = x + 220;
 
-  return { level, worldW, spawn: { x: 90, y: GT - 80 }, solids, breakables, gems, goal };
+  return { level, difficulty: d, worldW, spawn: { x: 90, y: GT - 80 }, solids, breakables, gems, movers, hazards, goal };
 }

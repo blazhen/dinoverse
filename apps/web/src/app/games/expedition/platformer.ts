@@ -41,6 +41,24 @@ const CHARACTERS: CharDef[] = [
 interface InitData {
   level?: number;
   charId?: CharId;
+  difficulty?: number;
+}
+
+const DIFF_KEY = 'dinoverse-difficulty';
+function loadStoredDifficulty(): number | undefined {
+  try {
+    const v = window.localStorage.getItem(DIFF_KEY);
+    return v ? Number(v) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+function saveStoredDifficulty(d: number) {
+  try {
+    window.localStorage.setItem(DIFF_KEY, String(d));
+  } catch {
+    // ignore (private mode, etc.)
+  }
 }
 
 class ExpeditionScene extends Phaser.Scene {
@@ -70,6 +88,13 @@ class ExpeditionScene extends Phaser.Scene {
   private gems = 0;
   private totalGems = 0;
   private won = false;
+  private difficulty = 1;
+  private nextDifficulty = 1;
+  private setbacks = 0;
+  private levelStartAt = 0;
+  private invulnUntil = 0;
+  private moversList: { rect: Phaser.GameObjects.Rectangle; originX: number; range: number }[] = [];
+  private hazardsGroup!: Phaser.Physics.Arcade.Group;
   private touch = { left: false, right: false, down: false, jumpDown: false, jumpPressed: false, abilityPressed: false };
 
   constructor() {
@@ -79,6 +104,7 @@ class ExpeditionScene extends Phaser.Scene {
   init(data: InitData) {
     this.level = data.level ?? 1;
     this.pendingCharId = data.charId ?? null;
+    this.difficulty = data.difficulty ?? loadStoredDifficulty() ?? 1;
     // Reset transient state (scene.restart reuses the instance).
     this.started = false;
     this.won = false;
@@ -87,11 +113,15 @@ class ExpeditionScene extends Phaser.Scene {
     this.crawling = false;
     this.facing = 1;
     this.jumpBufferedAt = -9999;
+    this.setbacks = 0;
+    this.invulnUntil = 0;
+    this.moversList = [];
     this.touch = { left: false, right: false, down: false, jumpDown: false, jumpPressed: false, abilityPressed: false };
   }
 
   create() {
-    this.spec = generateLevel(this.level);
+    this.spec = generateLevel(this.level, this.difficulty);
+    this.difficulty = this.spec.difficulty;
 
     this.physics.world.setBounds(0, 0, this.spec.worldW, WORLD_H);
     this.cameras.main.setBounds(0, 0, this.spec.worldW, WORLD_H);
@@ -133,6 +163,24 @@ class ExpeditionScene extends Phaser.Scene {
       this.gemsGroup.add(this.add.text(g.x, g.y, '💎', { fontSize: '24px' }).setOrigin(0.5).setResolution(2));
     }
     this.totalGems = spec.gems.length;
+
+    // Moving platforms (kinematic: immovable, no gravity, oscillate horizontally).
+    this.moversList = [];
+    for (const m of spec.movers) {
+      const rect = this.add.rectangle(m.x, m.y, m.w, 18, 0x0ea5e9).setStrokeStyle(2, 0x0369a1);
+      this.physics.add.existing(rect);
+      const body = rect.body as Body;
+      body.setAllowGravity(false);
+      body.setImmovable(true);
+      body.setVelocityX(m.speed);
+      this.moversList.push({ rect, originX: m.x, range: m.range });
+    }
+
+    // Hazards (gentle: bump you back, never kill).
+    this.hazardsGroup = this.physics.add.group({ allowGravity: false, immovable: true });
+    for (const h of spec.hazards) {
+      this.hazardsGroup.add(this.add.text(h.x, h.y, '🌵', { fontSize: '34px' }).setOrigin(0.5).setResolution(2));
+    }
 
     this.goal = this.add.text(spec.goal.x, spec.goal.y, '🪺', { fontSize: '34px' }).setOrigin(0.5).setResolution(2);
     this.physics.add.existing(this.goal, true);
@@ -198,6 +246,11 @@ class ExpeditionScene extends Phaser.Scene {
       this.updateHud();
     });
     this.physics.add.overlap(this.box, this.goal, () => this.win());
+    for (const m of this.moversList) this.physics.add.collider(this.box, m.rect);
+    this.physics.add.overlap(this.box, this.hazardsGroup, () => this.onHazard());
+
+    this.levelStartAt = this.time.now;
+    this.setbacks = 0;
 
     this.cameras.main.startFollow(this.box, true, 0.12, 0.12);
 
@@ -269,7 +322,7 @@ class ExpeditionScene extends Phaser.Scene {
 
   private updateHud() {
     this.hud.setText(
-      `Level ${this.level}   ${this.def.emoji} ${this.def.name}   💎 ${this.gems}/${this.totalGems}\n` +
+      `Level ${this.level} · Difficulty ${this.difficulty}   ${this.def.emoji} ${this.def.name}   💎 ${this.gems}/${this.totalGems}${this.setbacks ? `   🌵 x${this.setbacks}` : ''}\n` +
         `←/→ move · ↑/Space jump · ↓ crawl${this.def.ability !== 'highjump' ? ` · Shift = ${this.def.abilityLabel}` : ''}`,
     );
   }
@@ -314,10 +367,31 @@ class ExpeditionScene extends Phaser.Scene {
     this.time.delayedCall(280, () => body.setAllowGravity(true));
   }
 
+  /** Gentle setback: bump the player back, brief invulnerability, count it. Never a death. */
+  private onHazard() {
+    if (this.won || this.time.now < this.invulnUntil) return;
+    this.invulnUntil = this.time.now + 900;
+    this.setbacks += 1;
+    const body = this.box.body as Body;
+    body.setVelocity(-this.facing * 280, -260);
+    this.cameras.main.shake(150, 0.006);
+    this.tweens.add({ targets: this.sprite, alpha: 0.3, yoyo: true, repeat: 4, duration: 90, onComplete: () => this.sprite.setAlpha(1) });
+    this.updateHud();
+  }
+
   private win() {
     if (this.won) return;
     this.won = true;
     (this.box.body as Body).setVelocity(0, 0);
+
+    // Adaptive difficulty: how hard was this level for the player?
+    const timeSec = (this.time.now - this.levelStartAt) / 1000;
+    const expected = this.spec.worldW / 170; // rough par time in seconds
+    const struggled = this.setbacks >= 3 || timeSec > expected * 2.2;
+    const aced = this.setbacks === 0 && timeSec < expected * 1.3;
+    this.nextDifficulty = Phaser.Math.Clamp(this.difficulty + (aced ? 1 : struggled ? -1 : 0), 1, 10);
+    saveStoredDifficulty(this.nextDifficulty);
+
     this.banner.setText(`🎉 Level ${this.level} complete!   💎 ${this.gems}/${this.totalGems}\nTap / Space for the next level ▶`).setAlpha(1);
 
     const btn = this.add
@@ -330,7 +404,7 @@ class ExpeditionScene extends Phaser.Scene {
   }
 
   private nextLevel() {
-    this.scene.restart({ level: this.level + 1, charId: this.def.id });
+    this.scene.restart({ level: this.level + 1, charId: this.def.id, difficulty: this.nextDifficulty });
   }
 
   override update(time: number) {
@@ -404,6 +478,18 @@ class ExpeditionScene extends Phaser.Scene {
         this.smashReadyAt = time + 400;
         this.smash();
       }
+    }
+
+    // Moving platforms: bounce within their range, and carry the player when ridden.
+    for (const m of this.moversList) {
+      const mb = m.rect.body as Body;
+      if (m.rect.x <= m.originX && mb.velocity.x < 0) mb.setVelocityX(Math.abs(mb.velocity.x));
+      else if (m.rect.x >= m.originX + m.range && mb.velocity.x > 0) mb.setVelocityX(-Math.abs(mb.velocity.x));
+      const riding =
+        body.blocked.down &&
+        Math.abs(body.bottom - mb.top) < 8 &&
+        Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2;
+      if (riding) body.setVelocityX(body.velocity.x + mb.velocity.x);
     }
 
     this.sprite.setPosition(this.box.x, this.box.y + (this.crawling ? 8 : 0));
