@@ -53,6 +53,7 @@ class ExpeditionScene extends Phaser.Scene {
   private jumpBufferedAt = -9999;
   private wasGrounded = true;
   private won = false;
+  private followMode = false; // when ON, idle dinos follow the active one (Greak-style regroup)
   // On-screen touch input (merged with keyboard each frame).
   private touch = {
     left: false,
@@ -166,7 +167,7 @@ class ExpeditionScene extends Phaser.Scene {
       .setAlpha(0);
 
     this.cursors = this.input.keyboard!.createCursorKeys();
-    this.keys = this.input.keyboard!.addKeys('W,A,S,D,ONE,TWO,THREE,Q') as Record<
+    this.keys = this.input.keyboard!.addKeys('W,A,S,D,ONE,TWO,THREE,Q,F') as Record<
       string,
       Phaser.Input.Keyboard.Key
     >;
@@ -279,6 +280,14 @@ class ExpeditionScene extends Phaser.Scene {
         onPress: () => this.setActive(this.indexOf(id)),
       });
     });
+
+    // Follow toggle (left of the switch buttons).
+    this.touchButton(VIEW_W - 286, 52, 29, '👣', {
+      onPress: () => {
+        this.followMode = !this.followMode;
+        this.updateHud();
+      },
+    });
   }
 
   private puff(x: number, y: number) {
@@ -319,8 +328,9 @@ class ExpeditionScene extends Phaser.Scene {
   private updateHud() {
     const checklist = this.heroes.map((h) => `${h.emoji}${h.home ? '✓' : '·'}`).join(' ');
     this.hud.setText(
-      `Playing: ${this.getActive().emoji} ${this.getActive().name}   Home: ${checklist}\n` +
-        `[1/2/3] switch · ←/→ move · ↑/Space jump · Shift = ability · ↓ crawl`,
+      `Playing: ${this.getActive().emoji} ${this.getActive().name}   Home: ${checklist}   ` +
+        `Follow: ${this.followMode ? 'ON' : 'OFF'}\n` +
+        `[1/2/3] switch · ←/→ move · ↑/Space jump · Shift = ability · ↓ crawl · F = follow`,
     );
   }
 
@@ -353,6 +363,23 @@ class ExpeditionScene extends Phaser.Scene {
     this.time.delayedCall(300, () => body.setAllowGravity(true));
   }
 
+  /** Best-effort auto-follow: walk toward the leader and hop small obstacles. */
+  private followLeader(h: Hero, leader: Hero) {
+    const body = h.box.body as Body;
+    const dx = leader.box.x - h.box.x;
+    if (Math.abs(dx) > 80) {
+      const dir = dx < 0 ? -1 : 1;
+      body.setVelocityX(dir * 175);
+      h.facing = dir;
+      const onGround = body.blocked.down;
+      const blocked = (dir < 0 && body.blocked.left) || (dir > 0 && body.blocked.right);
+      const leaderAbove = leader.box.y < h.box.y - 50 && Math.abs(dx) < 220;
+      if (onGround && (blocked || leaderAbove)) body.setVelocityY(h.jump);
+    } else {
+      body.setVelocityX(0);
+    }
+  }
+
   private win() {
     if (this.won) return;
     this.won = true;
@@ -367,6 +394,10 @@ class ExpeditionScene extends Phaser.Scene {
     if (Phaser.Input.Keyboard.JustDown(this.keys.TWO!)) this.setActive(this.indexOf('stego'));
     if (Phaser.Input.Keyboard.JustDown(this.keys.THREE!)) this.setActive(this.indexOf('brachio'));
     if (Phaser.Input.Keyboard.JustDown(this.keys.Q!)) this.setActive((this.active + 1) % this.heroes.length);
+    if (Phaser.Input.Keyboard.JustDown(this.keys.F!)) {
+      this.followMode = !this.followMode;
+      this.updateHud();
+    }
 
     const a = this.getActive();
     const body = a.box.body as Body;
@@ -445,9 +476,17 @@ class ExpeditionScene extends Phaser.Scene {
       }
     }
 
-    // Inactive heroes stand still; on win, freeze everyone (fixes post-win drift).
+    // Non-active dinos: freeze on win; otherwise follow the leader (if follow mode) or wait.
+    const leader = this.getActive();
     this.heroes.forEach((h, i) => {
-      if (this.won || i !== this.active) (h.box.body as Body).setVelocityX(0);
+      if (i === this.active) return;
+      if (this.won) {
+        (h.box.body as Body).setVelocityX(0);
+      } else if (this.followMode) {
+        this.followLeader(h, leader);
+      } else {
+        (h.box.body as Body).setVelocityX(0);
+      }
     });
 
     // Door delivery (latch home once reached).
