@@ -16,8 +16,12 @@ Hub (Dino City) → enter a level → traverse with platforming + the 3 dinos' a
 
 ## Pillars (the things that make it *ours*)
 1. **Three switchable dinos, each with one signature ability** — puzzles require all three.
-2. **Switching = solo; players = co-op.** The exact same levels play solo (control one, switch, idle
-   dinos auto-follow) or with 2–3 kids (one dino each, no switching). One system, both modes.
+2. **Solo = ONE character; co-op = one dino per player.** (Revised 2026-05-27 — simpler for kids.)
+   In single-player you **pick one dino** and play the whole level as it (Mario-style); no party
+   management/switching/follow. The three dinos are **selectable characters** and become the
+   players in co-op multiplayer. Solo levels are beatable by any dino; each dino's ability opens
+   **optional bonus** areas. (Co-op levels that *require* multiple abilities are a later, separate
+   design.)
 3. **Learning is the progression engine** — you unlock abilities/areas by completing the learning
    challenges baked into puzzles (feeds the existing per-child progress system).
 4. **Gentle & warm** — Pixar tone, non-violent, hand-drawn art target.

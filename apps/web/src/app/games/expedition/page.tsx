@@ -15,9 +15,8 @@ export default function ExpeditionPage() {
           <h1 className="text-lg font-black">🦖 Dino Expedition</h1>
         </div>
         <p className="hidden text-xs text-slate-300 sm:block">
-          <span className="font-semibold">1/2/3</span> switch dino ·{' '}
           <span className="font-semibold">←/→</span> move · <span className="font-semibold">↑/Space</span>{' '}
-          jump · <span className="font-semibold">Shift</span> ability · <span className="font-semibold">↓</span> crawl
+          jump · <span className="font-semibold">↓</span> crawl · <span className="font-semibold">Shift</span> ability
         </p>
       </header>
 
@@ -26,8 +25,9 @@ export default function ExpeditionPage() {
       </div>
 
       <p className="px-4 py-1.5 text-center text-xs text-slate-400">
-        Get all three dinos home 🏡 — Trik ⚡ dashes, Stego 🛡️ smashes cracked blocks, Brachiosaurus
-        🔭 jumps high. (Prototype — placeholder art.)
+        Pick a dino, collect gems, and reach the nest 🪺. Each dino has a skill — Trik ⚡ dashes,
+        Stego 🛡️ smashes cracked blocks, Brachiosaurus 🔭 jumps high — for bonus areas. (Prototype —
+        placeholder art.)
       </p>
     </main>
   );
