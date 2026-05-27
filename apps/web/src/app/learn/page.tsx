@@ -5,6 +5,9 @@ import { db } from '@/lib/db';
 
 export const metadata = { title: 'DinoVerse Learn' };
 
+// Reads quizzes from the DB per request — don't prerender at build (no DB there).
+export const dynamic = 'force-dynamic';
+
 export default async function LearnPage() {
   const quizzes = await listQuizzes(db);
 

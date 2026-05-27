@@ -1,10 +1,9 @@
-import { account, createDb, session, user, verification } from '@dinoverse/db';
+import { account, session, user, verification } from '@dinoverse/db';
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 
+import { db } from './db';
 import { resetPasswordEmail, sendEmail } from './email';
-
-const db = createDb(process.env.DATABASE_URL!);
 
 /**
  * Better Auth server instance. `user` represents a PARENT account —

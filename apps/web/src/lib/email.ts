@@ -1,11 +1,20 @@
 import { Resend } from 'resend';
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-
 const FROM = process.env.EMAIL_FROM ?? 'DinoVerse <onboarding@resend.dev>';
 
+// Lazily construct the client so importing this module never throws when
+// RESEND_API_KEY is absent (e.g. during a build with no env vars set).
+let resend: Resend | null = null;
+function getResend(): Resend {
+  if (!process.env.RESEND_API_KEY) {
+    throw new Error('RESEND_API_KEY is not set — cannot send email.');
+  }
+  resend ??= new Resend(process.env.RESEND_API_KEY);
+  return resend;
+}
+
 export async function sendEmail(opts: { to: string; subject: string; html: string }) {
-  const { error } = await resend.emails.send({
+  const { error } = await getResend().emails.send({
     from: FROM,
     to: opts.to,
     subject: opts.subject,
