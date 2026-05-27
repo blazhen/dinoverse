@@ -2,7 +2,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import type { DinoType } from './dino-character';
 import type { RunnerHandle, RunnerOptions, RunnerStats } from './runner';
+
+// Our profile roster uses 'brachiosaurus'; the dino rig calls it 'brachio'.
+function dinoFor(avatar?: string): DinoType {
+  if (avatar === 'stego') return 'stego';
+  if (avatar === 'brachiosaurus') return 'brachio';
+  return 'trik';
+}
 
 // Faster start + higher ceiling for older kids; gentle for the youngest.
 function optsForAge(ageBand?: string): RunnerOptions {
@@ -64,12 +72,13 @@ export function RunnerCanvas() {
         .catch(() => null),
     ]).then(([{ createRunner }, data]) => {
       if (cancelled || !mountRef.current) return;
-      const child = (data?.child ?? null) as { ageBand?: string } | null;
+      const child = (data?.child ?? null) as { ageBand?: string; avatarCharacter?: string } | null;
       const loadedBest = Number(data?.progress?.runnerBestDistance ?? 0);
       bestRef.current = loadedBest;
       persistRef.current = !!child;
       setBest(loadedBest);
-      handleRef.current = createRunner(mountRef.current, { onUpdate, onGameOver }, optsForAge(child?.ageBand));
+      const opts: RunnerOptions = { ...optsForAge(child?.ageBand), character: dinoFor(child?.avatarCharacter) };
+      handleRef.current = createRunner(mountRef.current, { onUpdate, onGameOver }, opts);
     });
 
     return () => {

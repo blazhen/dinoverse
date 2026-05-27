@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dino Characters — Preview</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #1a1a24;
+      color: #f0f0f0;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    h1 { font-size: 20px; margin-bottom: 4px; }
+    .subtitle { font-size: 13px; color: #999; margin-bottom: 16px; }
+    #renderCanvas {
+      width: 100%;
+      height: 60vh;
+      max-height: 500px;
+      display: block;
+      background: #2a2a35;
+      border-radius: 12px;
+      touch-action: none;
+      outline: none;
+    }
+    .controls { margin-top: 16px; }
+    .group { margin-bottom: 12px; }
+    .label { font-size: 12px; color: #888; margin-bottom: 6px; }
+    .row { display: grid; gap: 8px; }
+    .cols-3 { grid-template-columns: repeat(3, 1fr); }
+    .cols-4 { grid-template-columns: repeat(4, 1fr); }
+    button {
+      background: #2a2a35;
+      color: #f0f0f0;
+      border: 1px solid #3a3a45;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      cursor: pointer;
+      font-family: inherit;
+      transition: background 0.15s;
+    }
+    button:hover { background: #34344a; }
+    button.active {
+      background: #4a6cf7;
+      border-color: #4a6cf7;
+    }
+  </style>
+</head>
+<body>
+  <h1>🦖 Dino Runner — Character Preview</h1>
+  <p class="subtitle">Pick a character, animation, and skin. Drag to rotate, scroll to zoom.</p>
+
+  <canvas id="renderCanvas"></canvas>
+
+  <div class="controls">
+    <div class="group">
+      <div class="label">Character</div>
+      <div class="row cols-3">
+        <button data-char="trik" class="char-btn active">Trik</button>
+        <button data-char="stego" class="char-btn">Stego</button>
+        <button data-char="trex" class="char-btn">T-Rex</button>
+      </div>
+    </div>
+    <div class="group">
+      <div class="label">Animation</div>
+      <div class="row cols-3">
+        <button data-anim="idle" class="anim-btn active">Idle</button>
+        <button data-anim="run" class="anim-btn">Run</button>
+        <button data-anim="jump" class="anim-btn">Jump</button>
+        <button data-anim="duck" class="anim-btn">Duck</button>
+        <button data-anim="death" class="anim-btn">Death</button>
+        <button data-anim="special" class="anim-btn">Special</button>
+      </div>
+    </div>
+    <div class="group">
+      <div class="label">Skin</div>
+      <div class="row cols-4">
+        <button data-skin="classic" class="skin-btn active">Classic</button>
+        <button data-skin="lava" class="skin-btn">Lava</button>
+        <button data-skin="ice" class="skin-btn">Ice</button>
+        <button data-skin="neon" class="skin-btn">Neon</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Babylon.js -->
+  <script src="https://cdn.jsdelivr.net/npm/babylonjs@6.49.0/babylon.min.js"></script>
+
+  <!-- Our module + demo wiring -->
+  <script type="module">
+    import { DinoCharacter } from './DinoCharacter.js';
+
+    const canvas = document.getElementById('renderCanvas');
+    const engine = new BABYLON.Engine(canvas, true, { preserveDrawingBuffer: true, stencil: true, antialias: true });
+    const scene = new BABYLON.Scene(engine);
+    scene.clearColor = new BABYLON.Color4(0.16, 0.16, 0.21, 1);
+
+    // Camera + lights
+    const camera = new BABYLON.ArcRotateCamera('cam',
+      -Math.PI/2 - 0.3, Math.PI/2.4, 11,
+      new BABYLON.Vector3(0, 1.2, 0), scene);
+    camera.attachControl(canvas, true);
+    camera.lowerRadiusLimit = 6;
+    camera.upperRadiusLimit = 20;
+    camera.wheelDeltaPercentage = 0.01;
+
+    new BABYLON.HemisphericLight('hemi', new BABYLON.Vector3(0, 1, 0), scene).intensity = 0.9;
+    const dir = new BABYLON.DirectionalLight('dir', new BABYLON.Vector3(-0.5, -1, -0.5), scene);
+    dir.intensity = 0.6;
+
+    // Ground
+    const ground = BABYLON.MeshBuilder.CreateGround('ground', { width: 30, height: 30 }, scene);
+    const gmat = new BABYLON.StandardMaterial('gmat', scene);
+    gmat.diffuseColor = new BABYLON.Color3(0.85, 0.83, 0.78);
+    gmat.specularColor = new BABYLON.Color3(0, 0, 0);
+    ground.material = gmat;
+
+    // State + character
+    let state = { char: 'trik', anim: 'idle', skin: 'classic' };
+    let dino = new DinoCharacter(scene, { type: state.char, skin: state.skin });
+
+    function rebuildCharacter() {
+      dino.dispose();
+      dino = new DinoCharacter(scene, { type: state.char, skin: state.skin });
+      dino.play(state.anim);
+    }
+
+    // Game loop drives the animation via dt
+    scene.registerBeforeRender(() => {
+      dino.update(engine.getDeltaTime() / 1000);
+    });
+
+    engine.runRenderLoop(() => scene.render());
+    window.addEventListener('resize', () => engine.resize());
+
+    // UI wiring
+    function bind(selector, key, sideEffect) {
+      document.querySelectorAll(selector).forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll(selector).forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          state[key] = btn.dataset[key === 'char' ? 'char' : key === 'anim' ? 'anim' : 'skin'];
+          sideEffect();
+        });
+      });
+    }
+    bind('.char-btn', 'char', rebuildCharacter);
+    bind('.anim-btn', 'anim', () => dino.play(state.anim));
+    bind('.skin-btn', 'skin', () => dino.setSkin(state.skin));
+  </script>
+</body>
+</html>

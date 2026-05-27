@@ -12,7 +12,12 @@ export async function GET() {
   }
   const progress = await getGameProgress(db, child.id);
   return NextResponse.json({
-    child: { id: child.id, name: child.displayName, ageBand: child.ageBand },
+    child: {
+      id: child.id,
+      name: child.displayName,
+      ageBand: child.ageBand,
+      avatarCharacter: child.avatarCharacter,
+    },
     progress: progress ?? null,
   });
 }

@@ -1,9 +1,13 @@
 import * as THREE from 'three';
 
-// Subway-Surfers-style 3D endless runner. Placeholder art (boxes/cones) — drops in real
-// 3D models later. Pure Three.js; runs on web, wraps to iOS/Android via Capacitor.
+import { DinoCharacter, type DinoType } from './dino-character';
+
+// Subway-Surfers-style 3D endless runner. Cartoony procedural dinos (DinoCharacter) run a 3-lane
+// track. Pure Three.js; runs on web, wraps to iOS/Android via Capacitor.
 
 const LANES = [-2.2, 0, 2.2];
+const DINO_SCALE = 0.42; // fit the ~3.5-unit model into the runner's scale
+const DINO_FOOT_LIFT = 0.13; // raise so the feet sit on the ground at this scale
 
 export interface RunnerStats {
   distance: number;
@@ -20,6 +24,7 @@ export interface RunnerOptions {
   startSpeed?: number;
   accel?: number;
   maxSpeed?: number;
+  character?: DinoType;
 }
 export interface RunnerHandle {
   destroy: () => void;
@@ -81,11 +86,12 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   }
 
   const player = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1.2, 1), new THREE.MeshStandardMaterial({ color: 0x22c55e }));
-  body.position.y = 0.6;
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), new THREE.MeshStandardMaterial({ color: 0x16a34a }));
-  head.position.set(0, 1.5, -0.1);
-  player.add(body, head);
+  const dino = new DinoCharacter({ type: opts.character ?? 'trik', hostControlsHeight: true });
+  dino.root.scale.setScalar(DINO_SCALE);
+  dino.root.position.y = DINO_FOOT_LIFT;
+  dino.root.rotation.y = Math.PI; // face away from the camera (running forward, into -z)
+  dino.play('run');
+  player.add(dino.root);
   scene.add(player);
 
   // A shield bubble around the player when shielded.
@@ -184,6 +190,8 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     player.position.set(0, 0, 0);
     player.visible = true;
     shieldBubble.visible = false;
+    dino.root.rotation.set(0, Math.PI, 0); // undo the death tumble
+    dino.play('run');
     emit();
   }
 
@@ -205,6 +213,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     emit();
     if (hearts <= 0) {
       over = true;
+      dino.play('death');
       cb.onGameOver(Math.floor(distance), gemCount);
     }
   }
@@ -213,6 +222,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     raf = requestAnimationFrame(loop);
     const dt = Math.min(clock.getDelta(), 0.05);
     if (over) {
+      dino.update(dt); // let the tumble animation play out
       renderer.render(scene, camera);
       return;
     }
@@ -235,9 +245,10 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     }
 
     const sliding = t < slideUntil;
-    body.scale.y = sliding ? 0.45 : 1;
-    body.position.y = sliding ? 0.27 : 0.6;
-    head.visible = !sliding;
+    if (jumping) dino.play('jump');
+    else if (sliding) dino.play('duck');
+    else dino.play('run');
+    dino.update(dt);
 
     // Invincibility blink.
     player.visible = t < invulnUntil ? Math.floor(t * 12) % 2 === 0 : true;
@@ -385,6 +396,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       parent.removeEventListener('touchstart', onTouchStart);
       parent.removeEventListener('touchend', onTouchEnd);
       ro.disconnect();
+      dino.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === parent) parent.removeChild(renderer.domElement);
     },
