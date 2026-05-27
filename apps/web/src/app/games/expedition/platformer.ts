@@ -502,11 +502,15 @@ class ExpeditionScene extends Phaser.Scene {
       const mb = m.rect.body as Body;
       if (m.rect.x <= m.originX && mb.velocity.x < 0) mb.setVelocityX(Math.abs(mb.velocity.x));
       else if (m.rect.x >= m.originX + m.range && mb.velocity.x > 0) mb.setVelocityX(-Math.abs(mb.velocity.x));
-      const riding =
+      // Carry the player ONLY when genuinely standing on top of this mover — player center
+      // above the platform, feet at its surface, horizontally over it. Prevents the
+      // "treadmill" push when merely touching its side or standing on nearby ground.
+      const onTop =
         body.blocked.down &&
-        Math.abs(body.bottom - mb.top) < 8 &&
-        Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2;
-      if (riding) body.setVelocityX(body.velocity.x + mb.velocity.x);
+        this.box.y < m.rect.y &&
+        Math.abs(body.bottom - mb.top) < 6 &&
+        Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2 - 2;
+      if (onTop) body.setVelocityX(body.velocity.x + mb.velocity.x);
     }
 
     this.sprite.setPosition(this.box.x, this.box.y + (this.crawling ? 8 : 0));

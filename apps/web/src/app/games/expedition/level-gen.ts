@@ -126,12 +126,14 @@ const CHUNKS: Record<string, (x: number, d: number) => Chunk> = {
         }),
 
   // Ride a moving platform over a single cactus (faster platform at higher difficulty).
+  // Mover travels strictly between the two ledges (small jump gaps), never overlapping them.
   movingBridge: (x, d) =>
-    empty(520, {
-      solids: [plat(x + 55, GT - 120, 110), plat(x + 450, GT - 120, 110)],
-      movers: [{ x: x + 160, y: GT - 120, w: 100, range: 210, speed: 60 + d * 12 }],
-      hazards: [{ x: x + 255, y: GT - 22 }],
-      gems: [{ x: x + 450, y: GT - 160 }],
+    empty(560, {
+      solids: [plat(x + 60, GT - 120, 100), plat(x + 500, GT - 120, 100)],
+      // ledges span x10..110 and x450..550; mover (w90) travels center 185..365 → edges 140..410, clear of both.
+      movers: [{ x: x + 185, y: GT - 120, w: 90, range: 180, speed: 55 + d * 11 }],
+      hazards: [{ x: x + 285, y: GT - 22 }],
+      gems: [{ x: x + 500, y: GT - 160 }],
     }),
 };
 
