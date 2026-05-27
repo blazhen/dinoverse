@@ -91,6 +91,7 @@ class ExpeditionScene extends Phaser.Scene {
   private smashReadyAt = 0;
   private lastGroundedAt = 0;
   private jumpBufferedAt = -9999;
+  private jumpCutActive = false; // variable-jump-height cut applies only to actual jumps
   private wasGrounded = true;
   private gems = 0;
   private totalGems = 0;
@@ -185,6 +186,7 @@ class ExpeditionScene extends Phaser.Scene {
       body.setImmovable(true);
       if (m.axis === 'x') {
         body.setVelocityX(m.speed);
+        body.setFriction(1, 0); // carries a rider standing on top (Arcade moving-platform behavior)
         this.moversList.push({ rect, axis: 'x', origin: m.x, range: m.range, prev: m.x });
       } else {
         body.setVelocityY(-m.speed);
@@ -278,6 +280,7 @@ class ExpeditionScene extends Phaser.Scene {
       if (body.velocity.y < -200) return; // already springing upward
       this.bounceReadyAt = this.time.now + 350;
       body.setVelocityY(-820); // big springy launch
+      this.jumpCutActive = false; // don't let the jump-cut nerf the bounce
       const p = pad as Phaser.GameObjects.Rectangle;
       this.puff(p.x, p.y - 10);
     });
@@ -419,6 +422,7 @@ class ExpeditionScene extends Phaser.Scene {
     this.setbacks += 1;
     const body = this.box.body as Body;
     body.setVelocity(-this.facing * 280, -260);
+    this.jumpCutActive = false; // knockback shouldn't be cut by the jump-height logic
     this.cameras.main.shake(150, 0.006);
     this.tweens.add({ targets: this.sprite, alpha: 0.3, yoyo: true, repeat: 4, duration: 90, onComplete: () => this.sprite.setAlpha(1) });
     this.updateHud();
@@ -488,7 +492,10 @@ class ExpeditionScene extends Phaser.Scene {
     }
 
     const onGround = body.blocked.down || body.touching.down; // touching.down: true on moving platforms too
-    if (onGround) this.lastGroundedAt = time;
+    if (onGround) {
+      this.lastGroundedAt = time;
+      this.jumpCutActive = false;
+    }
     if (onGround && !this.wasGrounded) this.puff(this.box.x, this.box.y + NORMAL_H / 2);
     this.wasGrounded = onGround;
 
@@ -527,9 +534,11 @@ class ExpeditionScene extends Phaser.Scene {
       body.setVelocityY(this.def.jump);
       this.jumpBufferedAt = -9999;
       this.lastGroundedAt = -9999;
+      this.jumpCutActive = true;
       this.puff(this.box.x, this.box.y + NORMAL_H / 2);
     }
-    if (!jumpHeld && body.velocity.y < 0) {
+    // Variable jump height — only cut an actual jump, never a bounce/knockback.
+    if (this.jumpCutActive && !jumpHeld && body.velocity.y < 0) {
       body.setVelocityY(body.velocity.y * JUMP_CUT);
     }
 
@@ -543,10 +552,10 @@ class ExpeditionScene extends Phaser.Scene {
     }
     if (time < this.dashEndAt) this.smash(); // dash-smash cracked blocks in the way
 
-    // Moving platforms: bounce within range; carry the rider by LOCKING them to the platform's
-    // exact per-frame movement (position, not velocity — velocity compounds with input and feels
-    // like a shove). Detection uses touching.down, since standing on a moving (dynamic) platform
-    // sets touching.down, not blocked.down. Vertical: carry on descent; ascent is the collision push.
+    // Moving platforms: just bounce them within their range. Riders are carried automatically
+    // by Arcade (immovable bodies have friction.x = 1 and drag the body resting on top). We do
+    // NOT carry manually — doing so stacked on top of the built-in friction and double-moved the
+    // player ("pushed forward faster"). Friction alone = the pad moves you, no push.
     for (const m of this.moversList) {
       const mb = m.rect.body as Body;
       if (m.axis === 'x') {
@@ -555,25 +564,6 @@ class ExpeditionScene extends Phaser.Scene {
       } else {
         if (m.rect.y >= m.origin && mb.velocity.y > 0) mb.setVelocityY(-Math.abs(mb.velocity.y));
         else if (m.rect.y <= m.origin - m.range && mb.velocity.y < 0) mb.setVelocityY(Math.abs(mb.velocity.y));
-      }
-
-      const cur = m.axis === 'x' ? m.rect.x : m.rect.y;
-      const delta = cur - m.prev;
-      m.prev = cur;
-
-      const onTop =
-        (body.touching.down || body.blocked.down) &&
-        this.box.y < m.rect.y &&
-        Math.abs(body.bottom - mb.top) < 14 &&
-        Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2;
-      if (onTop && delta !== 0) {
-        if (m.axis === 'x') {
-          this.box.x += delta;
-          body.position.x += delta;
-        } else if (delta > 0) {
-          this.box.y += delta;
-          body.position.y += delta;
-        }
       }
     }
 
