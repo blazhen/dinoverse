@@ -32,10 +32,11 @@ interface CharDef {
   abilityLabel: string;
 }
 
+// All dinos play identically now (same jump + dash). Choice is cosmetic.
 const CHARACTERS: CharDef[] = [
   { id: 'trik', name: 'Trik', emoji: '🦖', color: 0xfacc15, jump: -560, ability: 'dash', abilityLabel: '⚡ Dash' },
-  { id: 'stego', name: 'Stego', emoji: '🐢', color: 0x38bdf8, jump: -560, ability: 'smash', abilityLabel: '🛡️ Smash' },
-  { id: 'brachio', name: 'Brachiosaurus', emoji: '🦕', color: 0xfb923c, jump: -760, ability: 'highjump', abilityLabel: '🔭 High jump' },
+  { id: 'stego', name: 'Stego', emoji: '🐢', color: 0x38bdf8, jump: -560, ability: 'dash', abilityLabel: '⚡ Dash' },
+  { id: 'brachio', name: 'Brachiosaurus', emoji: '🦕', color: 0xfb923c, jump: -560, ability: 'dash', abilityLabel: '⚡ Dash' },
 ];
 
 interface InitData {
@@ -100,7 +101,7 @@ class ExpeditionScene extends Phaser.Scene {
   private levelStartAt = 0;
   private invulnUntil = 0;
   private persist = false;
-  private moversList: { rect: Phaser.GameObjects.Rectangle; originX: number; range: number }[] = [];
+  private moversList: { rect: Phaser.GameObjects.Rectangle; axis: 'x' | 'y'; origin: number; range: number; prev: number }[] = [];
   private hazardsGroup!: Phaser.Physics.Arcade.Group;
   private touch = { left: false, right: false, down: false, jumpDown: false, jumpPressed: false, abilityPressed: false };
 
@@ -172,7 +173,7 @@ class ExpeditionScene extends Phaser.Scene {
     }
     this.totalGems = spec.gems.length;
 
-    // Moving platforms (kinematic: immovable, no gravity, oscillate horizontally).
+    // Moving platforms (kinematic: immovable, no gravity, oscillate along their axis).
     this.moversList = [];
     for (const m of spec.movers) {
       const rect = this.add.rectangle(m.x, m.y, m.w, 18, 0x0ea5e9).setStrokeStyle(2, 0x0369a1);
@@ -180,8 +181,13 @@ class ExpeditionScene extends Phaser.Scene {
       const body = rect.body as Body;
       body.setAllowGravity(false);
       body.setImmovable(true);
-      body.setVelocityX(m.speed);
-      this.moversList.push({ rect, originX: m.x, range: m.range });
+      if (m.axis === 'x') {
+        body.setVelocityX(m.speed);
+        this.moversList.push({ rect, axis: 'x', origin: m.x, range: m.range, prev: m.x });
+      } else {
+        body.setVelocityY(-m.speed);
+        this.moversList.push({ rect, axis: 'y', origin: m.y, range: m.range, prev: m.y });
+      }
     }
 
     // Hazards (gentle: bump you back, never kill).
@@ -312,9 +318,7 @@ class ExpeditionScene extends Phaser.Scene {
       onUp: () => (this.touch.jumpDown = false),
     });
     this.touchButton(VIEW_W - 246, bottom, 44, '▼', { onDown: () => (this.touch.down = true), onUp: () => (this.touch.down = false) });
-    if (this.def.ability !== 'highjump') {
-      this.touchButton(VIEW_W - 150, bottom - 142, 46, '★', { onPress: () => (this.touch.abilityPressed = true) });
-    }
+    this.touchButton(VIEW_W - 150, bottom - 142, 46, '⚡', { onPress: () => (this.touch.abilityPressed = true) });
   }
 
   // ─── Helpers ─────────────────────────────────────────────────
@@ -331,8 +335,22 @@ class ExpeditionScene extends Phaser.Scene {
   private updateHud() {
     this.hud.setText(
       `Level ${this.level} · Difficulty ${this.difficulty}   ${this.def.emoji} ${this.def.name}   💎 ${this.gems}/${this.totalGems}${this.setbacks ? `   🌵 x${this.setbacks}` : ''}\n` +
-        `←/→ move · ↑/Space jump · ↓ crawl${this.def.ability !== 'highjump' ? ` · Shift = ${this.def.abilityLabel}` : ''}`,
+        `←/→ move · ↑/Space jump · ↓ crawl · Shift = ⚡ dash`,
     );
+  }
+
+  /** Would standing up collide with a solid overhead? (Keeps the dino crouched under low ceilings.) */
+  private headroomBlocked(): boolean {
+    const body = this.box.body as Body;
+    const standTop = body.bottom - NORMAL_H; // where the head would be if standing
+    const crouchTop = body.bottom - CRAWL_H; // current crouched head
+    const left = this.box.x - PLAYER_W / 2;
+    const right = this.box.x + PLAYER_W / 2;
+    for (const obj of this.solids.getChildren()) {
+      const sb = (obj as Phaser.GameObjects.Rectangle).body as Phaser.Physics.Arcade.StaticBody;
+      if (sb.right > left && sb.left < right && sb.bottom > standTop && sb.top < crouchTop) return true;
+    }
+    return false;
   }
 
   private setCrawling(on: boolean) {
@@ -395,8 +413,8 @@ class ExpeditionScene extends Phaser.Scene {
     // Adaptive difficulty: how hard was this level for the player?
     const timeSec = (this.time.now - this.levelStartAt) / 1000;
     const expected = this.spec.worldW / 170; // rough par time in seconds
-    const struggled = this.setbacks >= 3 || timeSec > expected * 2.2;
-    const aced = this.setbacks === 0 && timeSec < expected * 1.3;
+    const struggled = this.setbacks >= 2 || timeSec > expected * 1.8;
+    const aced = this.setbacks === 0 && timeSec < expected * 1.15;
     this.nextDifficulty = Phaser.Math.Clamp(this.difficulty + (aced ? 1 : struggled ? -1 : 0), 1, 10);
     saveStoredDifficulty(this.nextDifficulty);
 
@@ -449,7 +467,9 @@ class ExpeditionScene extends Phaser.Scene {
     const right = this.cursors.right.isDown || this.keys.D!.isDown || this.touch.right;
     const downHeld = this.cursors.down.isDown || this.keys.S!.isDown || this.touch.down;
 
-    this.setCrawling(downHeld && onGround);
+    // Stay crouched if there's a low ceiling overhead (don't pop up into it).
+    const wantCrawl = downHeld && onGround;
+    this.setCrawling(wantCrawl || (this.crawling && this.headroomBlocked()));
 
     if (time >= this.dashEndAt) {
       const speed = this.crawling ? CRAWL_SPEED : RUN_SPEED;
@@ -484,33 +504,45 @@ class ExpeditionScene extends Phaser.Scene {
       body.setVelocityY(body.velocity.y * JUMP_CUT);
     }
 
+    // Every dino dashes (Shift). Dashing into a cracked block smashes it.
     const abilityEdge = Phaser.Input.Keyboard.JustDown(this.cursors.shift) || this.touch.abilityPressed;
     this.touch.abilityPressed = false;
-    if (abilityEdge && !this.crawling) {
-      if (this.def.ability === 'dash' && time > this.dashReadyAt) {
-        this.dashReadyAt = time + 700;
-        this.dashEndAt = time + 280;
-        this.dash();
-      } else if (this.def.ability === 'smash' && time > this.smashReadyAt) {
-        this.smashReadyAt = time + 400;
-        this.smash();
-      }
+    if (abilityEdge && !this.crawling && time > this.dashReadyAt) {
+      this.dashReadyAt = time + 700;
+      this.dashEndAt = time + 280;
+      this.dash();
     }
+    if (time < this.dashEndAt) this.smash(); // dash-smash cracked blocks in the way
 
-    // Moving platforms: bounce within their range, and carry the player when ridden.
+    // Moving platforms: bounce within range, and carry the rider by the platform's exact
+    // movement (position-based, so there's no velocity slip / treadmill feel).
     for (const m of this.moversList) {
       const mb = m.rect.body as Body;
-      if (m.rect.x <= m.originX && mb.velocity.x < 0) mb.setVelocityX(Math.abs(mb.velocity.x));
-      else if (m.rect.x >= m.originX + m.range && mb.velocity.x > 0) mb.setVelocityX(-Math.abs(mb.velocity.x));
-      // Carry the player ONLY when genuinely standing on top of this mover — player center
-      // above the platform, feet at its surface, horizontally over it. Prevents the
-      // "treadmill" push when merely touching its side or standing on nearby ground.
+      if (m.axis === 'x') {
+        if (m.rect.x <= m.origin && mb.velocity.x < 0) mb.setVelocityX(Math.abs(mb.velocity.x));
+        else if (m.rect.x >= m.origin + m.range && mb.velocity.x > 0) mb.setVelocityX(-Math.abs(mb.velocity.x));
+      } else {
+        if (m.rect.y >= m.origin && mb.velocity.y > 0) mb.setVelocityY(-Math.abs(mb.velocity.y));
+        else if (m.rect.y <= m.origin - m.range && mb.velocity.y < 0) mb.setVelocityY(Math.abs(mb.velocity.y));
+      }
+      const cur = m.axis === 'x' ? m.rect.x : m.rect.y;
+      const delta = cur - m.prev;
       const onTop =
         body.blocked.down &&
         this.box.y < m.rect.y &&
-        Math.abs(body.bottom - mb.top) < 6 &&
-        Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2 - 2;
-      if (onTop) body.setVelocityX(body.velocity.x + mb.velocity.x);
+        Math.abs(body.bottom - mb.top) < 10 &&
+        Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2;
+      if (onTop && delta !== 0) {
+        if (m.axis === 'x') {
+          this.box.x += delta;
+          body.x += delta;
+        } else if (delta > 0) {
+          // descending: carry the player down (ascent is handled by the collision push)
+          this.box.y += delta;
+          body.y += delta;
+        }
+      }
+      m.prev = cur;
     }
 
     this.sprite.setPosition(this.box.x, this.box.y + (this.crawling ? 8 : 0));

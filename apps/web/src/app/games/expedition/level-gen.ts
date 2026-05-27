@@ -25,11 +25,12 @@ export interface GemSpec {
   x: number;
   y: number;
 }
-/** Horizontal moving platform: oscillates x in [x, x+range] at `speed` px/s. */
+/** Moving platform: oscillates along `axis` by `range` px at `speed` px/s. */
 export interface MoverSpec {
   x: number;
   y: number;
   w: number;
+  axis: 'x' | 'y';
   range: number;
   speed: number;
 }
@@ -72,7 +73,6 @@ const empty = (width: number, partial: Partial<Chunk> = {}): Chunk => ({
   ...partial,
 });
 
-// `d` = difficulty (affects mover speed and hazard count where relevant).
 const CHUNKS: Record<string, (x: number, d: number) => Chunk> = {
   flat: (x) => empty(280, { gems: [{ x: x + 140, y: GT - 40 }] }),
 
@@ -112,28 +112,34 @@ const CHUNKS: Record<string, (x: number, d: number) => Chunk> = {
       gems: [{ x: x + 340, y: GT - 275 }],
     }),
 
-  // Cacti to jump over — spaced far apart so there's clear ground to land between each.
-  // One cactus at low difficulty; two (220px apart) only when it's harder.
+  // Pillars to hop across (small jumpable gaps), gem on each top.
+  pillars: (x) =>
+    empty(440, {
+      solids: [plat(x + 60, GT - 95, 70), plat(x + 210, GT - 135, 70), plat(x + 360, GT - 95, 70)],
+      gems: [{ x: x + 60, y: GT - 135 }, { x: x + 210, y: GT - 175 }, { x: x + 360, y: GT - 135 }],
+    }),
+
+  // One cactus on easy; two (spaced far apart) when harder.
   hazardRow: (x, d) =>
     d >= 6
-      ? empty(500, {
-          hazards: [{ x: x + 130, y: GT - 22 }, { x: x + 350, y: GT - 22 }],
-          gems: [{ x: x + 240, y: GT - 95 }],
-        })
-      : empty(360, {
-          hazards: [{ x: x + 180, y: GT - 22 }],
-          gems: [{ x: x + 180, y: GT - 95 }],
-        }),
+      ? empty(500, { hazards: [{ x: x + 130, y: GT - 22 }, { x: x + 350, y: GT - 22 }], gems: [{ x: x + 240, y: GT - 95 }] })
+      : empty(360, { hazards: [{ x: x + 180, y: GT - 22 }], gems: [{ x: x + 180, y: GT - 95 }] }),
 
-  // Ride a moving platform over a single cactus (faster platform at higher difficulty).
-  // Mover travels strictly between the two ledges (small jump gaps), never overlapping them.
+  // Ride a horizontal moving platform over a cactus; never overlaps the end ledges.
   movingBridge: (x, d) =>
     empty(560, {
       solids: [plat(x + 60, GT - 120, 100), plat(x + 500, GT - 120, 100)],
-      // ledges span x10..110 and x450..550; mover (w90) travels center 185..365 → edges 140..410, clear of both.
-      movers: [{ x: x + 185, y: GT - 120, w: 90, range: 180, speed: 55 + d * 11 }],
+      movers: [{ x: x + 185, y: GT - 120, w: 90, axis: 'x', range: 180, speed: 55 + d * 11 }],
       hazards: [{ x: x + 285, y: GT - 22 }],
       gems: [{ x: x + 500, y: GT - 160 }],
+    }),
+
+  // Vertical elevator up to a high ledge + gems.
+  elevator: (x, d) =>
+    empty(380, {
+      solids: [plat(x + 250, GT - 235, 120)],
+      movers: [{ x: x + 110, y: GT - 55, w: 90, axis: 'y', range: 190, speed: 42 + d * 7 }],
+      gems: [{ x: x + 110, y: GT - 225 }, { x: x + 250, y: GT - 275 }],
     }),
 };
 
@@ -147,15 +153,14 @@ function mulberry32(seed: number): () => number {
 }
 
 export function generateLevel(level: number, difficulty?: number): LevelSpec {
-  const d = Math.max(1, Math.min(10, difficulty ?? level));
+  const d = Math.max(1, Math.min(10, Math.round(difficulty ?? level)));
   const rng = mulberry32((((level * 73856093) ^ (d * 19349663)) >>> 0) ^ 0x9e3779b9);
 
-  // Chunk pool widens with difficulty.
   const pool = ['flat', 'stepUpGem', 'gemArc', 'crackedBlock'];
-  if (d >= 3) pool.push('gapPlatforms', 'hazardRow');
-  if (d >= 4) pool.push('crawlTunnel');
+  if (d >= 3) pool.push('gapPlatforms', 'hazardRow', 'pillars');
+  if (d >= 4) pool.push('crawlTunnel', 'elevator');
   if (d >= 5) pool.push('staircaseHighGem', 'movingBridge');
-  if (d >= 7) pool.push('hazardRow', 'movingBridge'); // weight harder chunks more
+  if (d >= 7) pool.push('movingBridge', 'elevator', 'hazardRow'); // weight harder chunks more
 
   const count = Math.min(4 + level, 12);
 
@@ -165,7 +170,7 @@ export function generateLevel(level: number, difficulty?: number): LevelSpec {
   const movers: MoverSpec[] = [];
   const hazards: HazardSpec[] = [];
 
-  let x = 140; // clear start area (spawn at x=90)
+  let x = 140;
   for (let i = 0; i < count; i++) {
     const key = i === 0 ? 'flat' : (pool[Math.floor(rng() * pool.length)] ?? 'flat');
     const chunk = CHUNKS[key]!(x, d);
