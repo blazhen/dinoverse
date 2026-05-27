@@ -125,6 +125,19 @@ export const childProfilesRelations = relations(childProfiles, ({ one, many }) =
   progress: many(progress),
 }));
 
+/** One row per child: their adaptive game difficulty + cumulative stats for the platformer. */
+export const gameProgress = pgTable('game_progress', {
+  childId: uuid('child_id')
+    .primaryKey()
+    .references(() => childProfiles.id, { onDelete: 'cascade' }),
+  difficulty: integer('difficulty').notNull().default(1),
+  levelsCompleted: integer('levels_completed').notNull().default(0),
+  highestLevel: integer('highest_level').notNull().default(0),
+  gems: integer('gems').notNull().default(0),
+  setbacks: integer('setbacks').notNull().default(0),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const quizzesRelations = relations(quizzes, ({ many }) => ({
   questions: many(quizQuestions),
 }));

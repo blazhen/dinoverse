@@ -1,8 +1,8 @@
 import { neon } from '@neondatabase/serverless';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/neon-http';
 
-import { childProfiles, progress, quizQuestions, quizzes } from './schema';
+import { childProfiles, gameProgress, progress, quizQuestions, quizzes } from './schema';
 import * as schema from './schema';
 
 export * from './schema';
@@ -80,6 +80,41 @@ export function listProgressForChild(db: Database, childId: string) {
     .from(progress)
     .where(eq(progress.childId, childId))
     .orderBy(progress.completedAt);
+}
+
+// ─── Game progress (per child; adaptive difficulty + cumulative stats) ──
+export async function getGameProgress(db: Database, childId: string) {
+  const [row] = await db.select().from(gameProgress).where(eq(gameProgress.childId, childId));
+  return row ?? null;
+}
+
+/** Upsert a completed level: store latest difficulty, bump counters, track the highest level. */
+export async function recordLevelComplete(
+  db: Database,
+  childId: string,
+  data: { level: number; gems: number; setbacks: number; difficulty: number },
+) {
+  await db
+    .insert(gameProgress)
+    .values({
+      childId,
+      difficulty: data.difficulty,
+      levelsCompleted: 1,
+      highestLevel: data.level,
+      gems: data.gems,
+      setbacks: data.setbacks,
+    })
+    .onConflictDoUpdate({
+      target: gameProgress.childId,
+      set: {
+        difficulty: data.difficulty,
+        levelsCompleted: sql`${gameProgress.levelsCompleted} + 1`,
+        highestLevel: sql`greatest(${gameProgress.highestLevel}, ${data.level})`,
+        gems: sql`${gameProgress.gems} + ${data.gems}`,
+        setbacks: sql`${gameProgress.setbacks} + ${data.setbacks}`,
+        updatedAt: sql`now()`,
+      },
+    });
 }
 
 /** Progress rows joined with quiz titles, newest first — for the parent dashboard. */

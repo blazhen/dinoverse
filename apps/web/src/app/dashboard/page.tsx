@@ -1,4 +1,4 @@
-import { type CharacterId, listChildProfiles, listChildProgressDetailed } from '@dinoverse/db';
+import { type CharacterId, getGameProgress, listChildProfiles, listChildProgressDetailed } from '@dinoverse/db';
 import { Button } from '@dinoverse/ui';
 import { headers } from 'next/headers';
 import Link from 'next/link';
@@ -29,6 +29,7 @@ export default async function DashboardPage() {
   const progressByChild = await Promise.all(
     children.map((c) => listChildProgressDetailed(db, c.id)),
   );
+  const gameByChild = await Promise.all(children.map((c) => getGameProgress(db, c.id)));
 
   return (
     <main className="mx-auto flex max-w-2xl flex-col gap-8 px-6 py-16">
@@ -59,6 +60,7 @@ export default async function DashboardPage() {
             {children.map((child, i) => {
               const history = progressByChild[i] ?? [];
               const best = history.length ? Math.max(...history.map((h) => h.score)) : null;
+              const game = gameByChild[i];
               return (
                 <li key={child.id} className="rounded-xl bg-slate-50 px-4 py-3">
                   <div className="flex items-center justify-between">
@@ -80,11 +82,19 @@ export default async function DashboardPage() {
                   </div>
                   {history.length > 0 ? (
                     <p className="mt-2 text-xs text-slate-500">
-                      {history.length} quiz{history.length === 1 ? '' : 'zes'} completed · best
-                      score {best} · last: {history[0]!.quizTitle}
+                      🧠 {history.length} quiz{history.length === 1 ? '' : 'zes'} · best score {best}
                     </p>
                   ) : (
-                    <p className="mt-2 text-xs text-slate-400">No quizzes completed yet</p>
+                    <p className="mt-2 text-xs text-slate-400">🧠 No quizzes yet</p>
+                  )}
+                  {game ? (
+                    <p className="mt-1 text-xs text-slate-500">
+                      🎮 Expedition: {game.levelsCompleted} level
+                      {game.levelsCompleted === 1 ? '' : 's'} done · reached level {game.highestLevel}{' '}
+                      · difficulty {game.difficulty}/10 · 💎 {game.gems}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-slate-400">🎮 No game progress yet</p>
                   )}
                 </li>
               );

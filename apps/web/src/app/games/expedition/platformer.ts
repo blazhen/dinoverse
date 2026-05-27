@@ -44,6 +44,12 @@ interface InitData {
   difficulty?: number;
 }
 
+interface BootOpts {
+  difficulty?: number;
+  persist?: boolean; // true when an active child is signed in → save to the DB
+}
+let BOOT: BootOpts = {};
+
 const DIFF_KEY = 'dinoverse-difficulty';
 function loadStoredDifficulty(): number | undefined {
   try {
@@ -93,6 +99,7 @@ class ExpeditionScene extends Phaser.Scene {
   private setbacks = 0;
   private levelStartAt = 0;
   private invulnUntil = 0;
+  private persist = false;
   private moversList: { rect: Phaser.GameObjects.Rectangle; originX: number; range: number }[] = [];
   private hazardsGroup!: Phaser.Physics.Arcade.Group;
   private touch = { left: false, right: false, down: false, jumpDown: false, jumpPressed: false, abilityPressed: false };
@@ -104,7 +111,8 @@ class ExpeditionScene extends Phaser.Scene {
   init(data: InitData) {
     this.level = data.level ?? 1;
     this.pendingCharId = data.charId ?? null;
-    this.difficulty = data.difficulty ?? loadStoredDifficulty() ?? 1;
+    this.difficulty = data.difficulty ?? BOOT.difficulty ?? loadStoredDifficulty() ?? 1;
+    this.persist = BOOT.persist ?? false;
     // Reset transient state (scene.restart reuses the instance).
     this.started = false;
     this.won = false;
@@ -392,6 +400,15 @@ class ExpeditionScene extends Phaser.Scene {
     this.nextDifficulty = Phaser.Math.Clamp(this.difficulty + (aced ? 1 : struggled ? -1 : 0), 1, 10);
     saveStoredDifficulty(this.nextDifficulty);
 
+    // Persist to the DB for the signed-in child (fire-and-forget).
+    if (this.persist) {
+      void fetch('/api/game/progress', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: this.level, gems: this.gems, setbacks: this.setbacks, difficulty: this.nextDifficulty }),
+      }).catch(() => {});
+    }
+
     this.banner.setText(`🎉 Level ${this.level} complete!   💎 ${this.gems}/${this.totalGems}\nTap / Space for the next level ▶`).setAlpha(1);
 
     const btn = this.add
@@ -497,7 +514,8 @@ class ExpeditionScene extends Phaser.Scene {
   }
 }
 
-export function createExpedition(parent: HTMLDivElement): Phaser.Game {
+export function createExpedition(parent: HTMLDivElement, opts: BootOpts = {}): Phaser.Game {
+  BOOT = opts;
   return new Phaser.Game({
     type: Phaser.AUTO,
     parent,

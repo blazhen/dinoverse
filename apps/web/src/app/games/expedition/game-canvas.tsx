@@ -16,10 +16,22 @@ export function GameCanvas() {
   useEffect(() => {
     let cancelled = false;
 
-    void import('./platformer').then(({ createExpedition }) => {
+    void (async () => {
+      // Load this child's saved difficulty (if a kid is signed in / selected).
+      let opts: { difficulty?: number; persist?: boolean } = {};
+      try {
+        const res = await fetch('/api/game/progress');
+        if (res.ok) {
+          const data = await res.json();
+          opts = { difficulty: data?.progress?.difficulty, persist: Boolean(data?.child) };
+        }
+      } catch {
+        // offline / not signed in → fall back to localStorage in the scene
+      }
+      const { createExpedition } = await import('./platformer');
       if (cancelled || !mountRef.current) return;
-      gameRef.current = createExpedition(mountRef.current);
-    });
+      gameRef.current = createExpedition(mountRef.current, opts);
+    })();
 
     // Keep Phaser's FIT scaling in sync when the wrapper resizes (incl. fullscreen).
     const ro = new ResizeObserver(() => gameRef.current?.scale.refresh());

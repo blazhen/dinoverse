@@ -112,20 +112,26 @@ const CHUNKS: Record<string, (x: number, d: number) => Chunk> = {
       gems: [{ x: x + 340, y: GT - 275 }],
     }),
 
-  // Jump over a few cacti, or you get gently bumped back.
+  // Cacti to jump over — spaced far apart so there's clear ground to land between each.
+  // One cactus at low difficulty; two (220px apart) only when it's harder.
   hazardRow: (x, d) =>
-    empty(320, {
-      hazards: d >= 5 ? [{ x: x + 80, y: GT - 22 }, { x: x + 160, y: GT - 22 }, { x: x + 240, y: GT - 22 }] : [{ x: x + 110, y: GT - 22 }, { x: x + 200, y: GT - 22 }],
-      gems: [{ x: x + 160, y: GT - 95 }],
-    }),
+    d >= 6
+      ? empty(500, {
+          hazards: [{ x: x + 130, y: GT - 22 }, { x: x + 350, y: GT - 22 }],
+          gems: [{ x: x + 240, y: GT - 95 }],
+        })
+      : empty(360, {
+          hazards: [{ x: x + 180, y: GT - 22 }],
+          gems: [{ x: x + 180, y: GT - 95 }],
+        }),
 
-  // Ride a moving platform across a hazard pit (faster platform at higher difficulty).
+  // Ride a moving platform over a single cactus (faster platform at higher difficulty).
   movingBridge: (x, d) =>
-    empty(500, {
-      solids: [plat(x + 55, GT - 120, 100), plat(x + 430, GT - 120, 100)],
-      movers: [{ x: x + 150, y: GT - 120, w: 90, range: 190, speed: 70 + d * 14 }],
-      hazards: [{ x: x + 200, y: GT - 22 }, { x: x + 270, y: GT - 22 }, { x: x + 340, y: GT - 22 }],
-      gems: [{ x: x + 430, y: GT - 160 }],
+    empty(520, {
+      solids: [plat(x + 55, GT - 120, 110), plat(x + 450, GT - 120, 110)],
+      movers: [{ x: x + 160, y: GT - 120, w: 100, range: 210, speed: 60 + d * 12 }],
+      hazards: [{ x: x + 255, y: GT - 22 }],
+      gems: [{ x: x + 450, y: GT - 160 }],
     }),
 };
 
