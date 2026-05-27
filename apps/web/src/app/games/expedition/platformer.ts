@@ -101,9 +101,10 @@ class ExpeditionScene extends Phaser.Scene {
   private levelStartAt = 0;
   private invulnUntil = 0;
   private persist = false;
-  private moversList: { rect: Phaser.GameObjects.Rectangle; axis: 'x' | 'y'; origin: number; range: number }[] = [];
+  private moversList: { rect: Phaser.GameObjects.Rectangle; axis: 'x' | 'y'; origin: number; range: number; prev: number }[] = [];
   private hazardsGroup!: Phaser.Physics.Arcade.Group;
   private bouncersGroup!: Phaser.Physics.Arcade.Group;
+  private bounceReadyAt = 0;
   private touch = { left: false, right: false, down: false, jumpDown: false, jumpPressed: false, abilityPressed: false };
 
   constructor() {
@@ -184,10 +185,10 @@ class ExpeditionScene extends Phaser.Scene {
       body.setImmovable(true);
       if (m.axis === 'x') {
         body.setVelocityX(m.speed);
-        this.moversList.push({ rect, axis: 'x', origin: m.x, range: m.range });
+        this.moversList.push({ rect, axis: 'x', origin: m.x, range: m.range, prev: m.x });
       } else {
         body.setVelocityY(-m.speed);
-        this.moversList.push({ rect, axis: 'y', origin: m.y, range: m.range });
+        this.moversList.push({ rect, axis: 'y', origin: m.y, range: m.range, prev: m.y });
       }
     }
 
@@ -272,13 +273,13 @@ class ExpeditionScene extends Phaser.Scene {
     for (const m of this.moversList) this.physics.add.collider(this.box, m.rect);
     this.physics.add.overlap(this.box, this.hazardsGroup, () => this.onHazard());
     this.physics.add.overlap(this.box, this.bouncersGroup, (_b, pad) => {
+      if (this.time.now < this.bounceReadyAt) return;
       const body = this.box.body as Body;
+      if (body.velocity.y < -200) return; // already springing upward
+      this.bounceReadyAt = this.time.now + 350;
+      body.setVelocityY(-820); // big springy launch
       const p = pad as Phaser.GameObjects.Rectangle;
-      // Only spring when coming down onto the pad.
-      if (body.velocity.y >= -50 && this.box.y < p.y) {
-        body.setVelocityY(-760);
-        this.puff(p.x, p.y - 10);
-      }
+      this.puff(p.x, p.y - 10);
     });
 
     this.levelStartAt = this.time.now;
@@ -435,7 +436,7 @@ class ExpeditionScene extends Phaser.Scene {
     const reallyStruggled = this.setbacks >= 4 || timeSec > expected * 2.6;
     const aced = this.setbacks === 0 && timeSec < expected * 1.15;
     const delta = aced ? 1 : reallyStruggled ? -2 : struggled ? -1 : 0;
-    this.nextDifficulty = Phaser.Math.Clamp(this.difficulty + delta, 1, 10);
+    this.nextDifficulty = Phaser.Math.Clamp(this.difficulty + delta, 1, 20);
     saveStoredDifficulty(this.nextDifficulty);
 
     // Persist to the DB for the signed-in child (fire-and-forget).
@@ -542,25 +543,37 @@ class ExpeditionScene extends Phaser.Scene {
     }
     if (time < this.dashEndAt) this.smash(); // dash-smash cracked blocks in the way
 
-    // Moving platforms: bounce within range; carry the rider by matching the platform's
-    // velocity. Standing on a *moving* (dynamic) platform sets touching.down, NOT blocked.down
-    // — checking the wrong one was the treadmill bug. Vertical movers are carried by the
-    // collision push (going up) and gravity (coming down), so no manual carry there.
+    // Moving platforms: bounce within range; carry the rider by LOCKING them to the platform's
+    // exact per-frame movement (position, not velocity — velocity compounds with input and feels
+    // like a shove). Detection uses touching.down, since standing on a moving (dynamic) platform
+    // sets touching.down, not blocked.down. Vertical: carry on descent; ascent is the collision push.
     for (const m of this.moversList) {
       const mb = m.rect.body as Body;
       if (m.axis === 'x') {
         if (m.rect.x <= m.origin && mb.velocity.x < 0) mb.setVelocityX(Math.abs(mb.velocity.x));
         else if (m.rect.x >= m.origin + m.range && mb.velocity.x > 0) mb.setVelocityX(-Math.abs(mb.velocity.x));
-
-        const onTop =
-          (body.touching.down || body.blocked.down) &&
-          this.box.y < m.rect.y &&
-          Math.abs(body.bottom - mb.top) < 12 &&
-          Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2;
-        if (onTop) body.setVelocityX(body.velocity.x + mb.velocity.x);
       } else {
         if (m.rect.y >= m.origin && mb.velocity.y > 0) mb.setVelocityY(-Math.abs(mb.velocity.y));
         else if (m.rect.y <= m.origin - m.range && mb.velocity.y < 0) mb.setVelocityY(Math.abs(mb.velocity.y));
+      }
+
+      const cur = m.axis === 'x' ? m.rect.x : m.rect.y;
+      const delta = cur - m.prev;
+      m.prev = cur;
+
+      const onTop =
+        (body.touching.down || body.blocked.down) &&
+        this.box.y < m.rect.y &&
+        Math.abs(body.bottom - mb.top) < 14 &&
+        Math.abs(this.box.x - m.rect.x) < m.rect.width / 2 + PLAYER_W / 2;
+      if (onTop && delta !== 0) {
+        if (m.axis === 'x') {
+          this.box.x += delta;
+          body.position.x += delta;
+        } else if (delta > 0) {
+          this.box.y += delta;
+          body.position.y += delta;
+        }
       }
     }
 

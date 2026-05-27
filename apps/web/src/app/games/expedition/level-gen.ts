@@ -136,7 +136,7 @@ const CHUNKS: Record<string, (x: number, d: number) => Chunk> = {
   movingBridge: (x, d) =>
     empty(560, {
       solids: [plat(x + 60, GT - 120, 100), plat(x + 500, GT - 120, 100)],
-      movers: [{ x: x + 185, y: GT - 120, w: 90, axis: 'x', range: 180, speed: 55 + d * 11 }],
+      movers: [{ x: x + 185, y: GT - 120, w: 90, axis: 'x', range: 180, speed: Math.min(40 + d * 6, 120) }],
       hazards: [{ x: x + 285, y: GT - 22 }],
       gems: [{ x: x + 500, y: GT - 160 }],
     }),
@@ -145,15 +145,15 @@ const CHUNKS: Record<string, (x: number, d: number) => Chunk> = {
   elevator: (x, d) =>
     empty(380, {
       solids: [plat(x + 250, GT - 235, 120)],
-      movers: [{ x: x + 110, y: GT - 55, w: 90, axis: 'y', range: 190, speed: 42 + d * 7 }],
+      movers: [{ x: x + 110, y: GT - 55, w: 90, axis: 'y', range: 190, speed: Math.min(35 + d * 5, 95) }],
       gems: [{ x: x + 110, y: GT - 225 }, { x: x + 250, y: GT - 275 }],
     }),
 
-  // Bounce pad: land on it to spring high up to a gem.
+  // Bounce pad: walk/land on it to spring high up to a couple of gems.
   bouncePad: (x) =>
     empty(300, {
-      bouncers: [{ x: x + 150, y: GT - 12 }],
-      gems: [{ x: x + 150, y: GT - 150 }, { x: x + 150, y: GT - 230 }],
+      bouncers: [{ x: x + 150, y: GT - 10 }],
+      gems: [{ x: x + 150, y: GT - 150 }, { x: x + 150, y: GT - 240 }],
     }),
 };
 
@@ -167,7 +167,7 @@ function mulberry32(seed: number): () => number {
 }
 
 export function generateLevel(level: number, difficulty?: number): LevelSpec {
-  const d = Math.max(1, Math.min(10, Math.round(difficulty ?? level)));
+  const d = Math.max(1, Math.min(20, Math.round(difficulty ?? level)));
   const rng = mulberry32((((level * 73856093) ^ (d * 19349663)) >>> 0) ^ 0x9e3779b9);
 
   const pool = ['flat', 'stepUpGem', 'gemArc', 'crackedBlock'];
