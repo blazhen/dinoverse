@@ -53,6 +53,15 @@ class ExpeditionScene extends Phaser.Scene {
   private jumpBufferedAt = -9999;
   private wasGrounded = true;
   private won = false;
+  // On-screen touch input (merged with keyboard each frame).
+  private touch = {
+    left: false,
+    right: false,
+    down: false,
+    jumpDown: false,
+    jumpPressed: false,
+    abilityPressed: false,
+  };
 
   constructor() {
     super('expedition');
@@ -162,6 +171,9 @@ class ExpeditionScene extends Phaser.Scene {
       Phaser.Input.Keyboard.Key
     >;
 
+    this.input.addPointer(3); // allow several simultaneous touches (move + jump + …)
+    this.createTouchControls();
+
     this.updateHud();
   }
 
@@ -187,6 +199,76 @@ class ExpeditionScene extends Phaser.Scene {
     for (let i = 0; i < 9; i++) {
       this.add.ellipse(i * 330, 600, 420, 320, 0x4ade80, 0.6).setScrollFactor(0.6).setDepth(-1);
     }
+  }
+
+  /** A round, semi-transparent on-screen button pinned to the camera. Works with touch + mouse. */
+  private touchButton(
+    x: number,
+    y: number,
+    r: number,
+    label: string,
+    handlers: { onDown?: () => void; onUp?: () => void; onPress?: () => void },
+  ) {
+    const c = this.add
+      .circle(x, y, r, 0xffffff, 0.22)
+      .setScrollFactor(0)
+      .setDepth(20)
+      .setStrokeStyle(3, 0xffffff, 0.55)
+      .setInteractive();
+    this.add
+      .text(x, y, label, { fontSize: `${Math.round(r)}px` })
+      .setOrigin(0.5)
+      .setScrollFactor(0)
+      .setDepth(21);
+    const press = () => {
+      c.setFillStyle(0xffffff, 0.42);
+      handlers.onDown?.();
+      handlers.onPress?.();
+    };
+    const release = () => {
+      c.setFillStyle(0xffffff, 0.22);
+      handlers.onUp?.();
+    };
+    c.on('pointerdown', press);
+    c.on('pointerup', release);
+    c.on('pointerout', release);
+    c.on('pointerupoutside', release);
+  }
+
+  private createTouchControls() {
+    const bottom = VIEW_H - 92;
+    // Movement (left side).
+    this.touchButton(95, bottom, 46, '◀', {
+      onDown: () => (this.touch.left = true),
+      onUp: () => (this.touch.left = false),
+    });
+    this.touchButton(212, bottom, 46, '▶', {
+      onDown: () => (this.touch.right = true),
+      onUp: () => (this.touch.right = false),
+    });
+    this.touchButton(154, bottom - 112, 36, '▼', {
+      onDown: () => (this.touch.down = true),
+      onUp: () => (this.touch.down = false),
+    });
+    // Actions (right side).
+    this.touchButton(VIEW_W - 95, bottom, 54, '▲', {
+      onDown: () => {
+        this.touch.jumpDown = true;
+        this.touch.jumpPressed = true;
+      },
+      onUp: () => (this.touch.jumpDown = false),
+    });
+    this.touchButton(VIEW_W - 212, bottom - 22, 44, '★', {
+      onPress: () => (this.touch.abilityPressed = true),
+    });
+    // Switch dino (top center).
+    const ids: Hero['id'][] = ['trik', 'stego', 'brachio'];
+    const emojis = ['🦖', '🐢', '🦕'];
+    ids.forEach((id, k) => {
+      this.touchButton(VIEW_W / 2 - 64 + k * 64, 46, 28, emojis[k]!, {
+        onPress: () => this.setActive(this.indexOf(id)),
+      });
+    });
   }
 
   private puff(x: number, y: number) {
@@ -292,9 +374,9 @@ class ExpeditionScene extends Phaser.Scene {
     }
 
     if (!this.won) {
-      const left = this.cursors.left.isDown || this.keys.A!.isDown;
-      const right = this.cursors.right.isDown || this.keys.D!.isDown;
-      const downHeld = this.cursors.down.isDown || this.keys.S!.isDown;
+      const left = this.cursors.left.isDown || this.keys.A!.isDown || this.touch.left;
+      const right = this.cursors.right.isDown || this.keys.D!.isDown || this.touch.right;
+      const downHeld = this.cursors.down.isDown || this.keys.S!.isDown || this.touch.down;
 
       this.setCrawling(downHeld && onGround);
 
@@ -315,12 +397,17 @@ class ExpeditionScene extends Phaser.Scene {
       if (
         Phaser.Input.Keyboard.JustDown(this.cursors.up) ||
         Phaser.Input.Keyboard.JustDown(this.keys.W!) ||
-        Phaser.Input.Keyboard.JustDown(this.cursors.space)
+        Phaser.Input.Keyboard.JustDown(this.cursors.space) ||
+        this.touch.jumpPressed
       ) {
         this.jumpBufferedAt = time;
       }
+      this.touch.jumpPressed = false; // consume the edge
       const jumpHeld =
-        this.cursors.up.isDown || this.keys.W!.isDown || this.cursors.space.isDown;
+        this.cursors.up.isDown ||
+        this.keys.W!.isDown ||
+        this.cursors.space.isDown ||
+        this.touch.jumpDown;
       const canJump = (onGround || time - this.lastGroundedAt <= COYOTE_MS) && !this.crawling;
       if (canJump && time - this.jumpBufferedAt <= JUMP_BUFFER_MS) {
         body.setVelocityY(a.jump);
@@ -332,8 +419,11 @@ class ExpeditionScene extends Phaser.Scene {
         body.setVelocityY(body.velocity.y * JUMP_CUT); // short hop on early release
       }
 
-      // Ability on Shift: Trik dashes, Stego smashes. (Brachio's ability is the high jump.)
-      if (Phaser.Input.Keyboard.JustDown(this.cursors.shift) && !this.crawling) {
+      // Ability (Shift or the ★ button): Trik dashes, Stego smashes. (Brachio's ability is the high jump.)
+      const abilityEdge =
+        Phaser.Input.Keyboard.JustDown(this.cursors.shift) || this.touch.abilityPressed;
+      this.touch.abilityPressed = false; // consume the edge
+      if (abilityEdge && !this.crawling) {
         if (a.id === 'trik' && time > this.dashReadyAt) {
           this.dashReadyAt = time + 700;
           this.dashEndAt = time + 300;
