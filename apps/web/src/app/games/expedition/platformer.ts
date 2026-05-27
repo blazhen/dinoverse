@@ -109,20 +109,22 @@ class ExpeditionScene extends Phaser.Scene {
     this.addSolid(770, 410, 140, 22);
     this.addGem(770, 370);
 
-    // Trik bonus: two platforms with a wide gap to dash across (fall lands safely on ground).
+    // A wide gap between two platforms. Trik can DASH across as a shortcut; anyone can just
+    // hop up onto the far platform from the ground below.
     this.addSolid(1120, 430, 130, 22);
     this.addSolid(1430, 430, 130, 22);
     this.addGem(1430, 392);
 
-    // Brachiosaurus bonus: a high platform only the high jump reaches.
-    this.addSolid(1780, 300, 150, 22);
-    this.addGem(1780, 268);
+    // A staircase up to a high gem — anyone can climb the steps; Brachiosaurus can high-jump
+    // straight to the top as a shortcut.
+    this.addSolid(1700, 450, 120, 22);
+    this.addSolid(1820, 372, 120, 22);
+    this.addSolid(1950, 300, 130, 22);
+    this.addGem(1950, 268);
 
-    // Stego bonus: a sealed alcove; only smashing the cracked block reaches the gem.
-    this.addSolid(2240, 470, 40, 100, 0x57534e, 0x44403c); // back wall
-    this.addSolid(2185, 430, 150, 20, 0x57534e, 0x44403c); // ceiling
-    this.addBreakable(2120, 500, 40, 70);
-    this.addGem(2160, 510);
+    // A cracked block on the path. Stego can SMASH through it; anyone else just hops over it.
+    this.addBreakable(2150, 505, 40, 70);
+    this.addGem(2215, 510);
 
     // Ground gems.
     this.addGem(300, 500);

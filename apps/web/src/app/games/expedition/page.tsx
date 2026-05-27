@@ -25,9 +25,9 @@ export default function ExpeditionPage() {
       </div>
 
       <p className="px-4 py-1.5 text-center text-xs text-slate-400">
-        Pick a dino, collect gems, and reach the nest 🪺. Each dino has a skill — Trik ⚡ dashes,
-        Stego 🛡️ smashes cracked blocks, Brachiosaurus 🔭 jumps high — for bonus areas. (Prototype —
-        placeholder art.)
+        Pick a dino, collect gems, and reach the nest 🪺. Every gem is reachable by anyone; each
+        dino&apos;s skill — Trik ⚡ dash, Stego 🛡️ smash, Brachiosaurus 🔭 high jump — is just a handy
+        shortcut. (Prototype — placeholder art.)
       </p>
     </main>
   );
