@@ -11,6 +11,9 @@ Animated media + TikTok-style feed + co-op multiplayer games + gamified learning
 
 - **[SYSTEM_PROMPT.md](SYSTEM_PROMPT.md)** — the role, vision, character canon, tech stack, and
   execution rules. Operate as the persona defined there.
+- **[docs/GAME_DESIGN.md](docs/GAME_DESIGN.md)** — the converged game vision (core loop, pillars,
+  characters, controls, age tiers, and explicit non-goals). Build toward this; protect it from
+  scope sprawl.
 - **[ROADMAP.md](ROADMAP.md)** — the durable to-do backlog and open decisions. Update it as work
   progresses; do not let tasks live only in session memory.
 - **[AI Prompt Knowledge.txt](AI%20Prompt%20Knowledge.txt)** — the original brief (kept for history).
