@@ -1,8 +1,11 @@
 import * as Phaser from 'phaser';
 
 const WORLD_W = 2600;
-const WORLD_H = 600;
+const WORLD_H = 720;
 const GROUND_TOP = 540;
+
+const VIEW_W = 1280;
+const VIEW_H = 720;
 
 const PLAYER_W = 34;
 const NORMAL_H = 46;
@@ -58,8 +61,9 @@ class ExpeditionScene extends Phaser.Scene {
     this.solids = this.physics.add.staticGroup();
     this.breakables = this.physics.add.staticGroup();
 
-    // Continuous ground (no pits — heroes can always walk to each gate).
-    this.addSolid(WORLD_W / 2, GROUND_TOP + 30, WORLD_W, 60, 0x3f6212, 0x365314);
+    // Continuous ground (no pits — heroes can always walk to each gate). Extends to the
+    // bottom of the taller viewport so there's no sky showing beneath the ground.
+    this.addSolid(WORLD_W / 2, GROUND_TOP + (WORLD_H - GROUND_TOP) / 2, WORLD_W, WORLD_H - GROUND_TOP, 0x3f6212, 0x365314);
 
     // ── Stego gate: a sealed nook; only Stego can smash the front block ──
     this.addSolid(700, 470, 40, 100, 0x57534e, 0x44403c); // back wall
@@ -132,7 +136,7 @@ class ExpeditionScene extends Phaser.Scene {
       .setDepth(10);
 
     this.banner = this.add
-      .text(400, 200, '', {
+      .text(VIEW_W / 2, VIEW_H * 0.38, '', {
         fontSize: '20px',
         color: '#ffffff',
         backgroundColor: '#065f46',
@@ -248,6 +252,8 @@ class ExpeditionScene extends Phaser.Scene {
   private win() {
     if (this.won) return;
     this.won = true;
+    // Freeze everyone so no one drifts after the win.
+    this.heroes.forEach((h) => (h.box.body as Body).setVelocity(0, 0));
     this.banner.setText('🎉 All three dinos are home!\nGreat teamwork!').setAlpha(1);
   }
 
@@ -309,9 +315,9 @@ class ExpeditionScene extends Phaser.Scene {
       }
     }
 
-    // Inactive heroes stand still.
+    // Inactive heroes stand still; on win, freeze everyone (fixes post-win drift).
     this.heroes.forEach((h, i) => {
-      if (i !== this.active) (h.box.body as Body).setVelocityX(0);
+      if (this.won || i !== this.active) (h.box.body as Body).setVelocityX(0);
     });
 
     // Door delivery (latch home once reached).
@@ -345,12 +351,12 @@ export function createExpedition(parent: HTMLDivElement): Phaser.Game {
   return new Phaser.Game({
     type: Phaser.AUTO,
     parent,
-    width: 800,
-    height: 450,
+    width: VIEW_W,
+    height: VIEW_H,
     backgroundColor: '#bae6fd',
     physics: { default: 'arcade', arcade: { gravity: { x: 0, y: GRAVITY_Y }, debug: false } },
     scene: ExpeditionScene,
     render: { roundPixels: true, antialias: true },
-    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_HORIZONTALLY },
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   });
 }
