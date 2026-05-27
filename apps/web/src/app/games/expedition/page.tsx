@@ -1,12 +1,14 @@
 import Link from 'next/link';
 
 import { GameCanvas } from './game-canvas';
+import { OrientationGate } from './orientation-gate';
 
 export const metadata = { title: 'Dino Expedition' };
 
 export default function ExpeditionPage() {
   return (
     <main className="flex h-[100dvh] flex-col bg-slate-900 text-white">
+      <OrientationGate />
       <header className="flex items-center justify-between gap-4 px-4 py-2">
         <div className="flex items-center gap-3">
           <Link href="/games" className="text-sm font-semibold text-emerald-300 hover:underline">
