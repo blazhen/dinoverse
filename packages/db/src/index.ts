@@ -117,6 +117,25 @@ export async function recordLevelComplete(
     });
 }
 
+/** Dino Dash result: keep the best distance and add to total gems. */
+export async function recordRunnerResult(
+  db: Database,
+  childId: string,
+  data: { distance: number; gems: number },
+) {
+  await db
+    .insert(gameProgress)
+    .values({ childId, runnerBestDistance: data.distance, runnerGems: data.gems })
+    .onConflictDoUpdate({
+      target: gameProgress.childId,
+      set: {
+        runnerBestDistance: sql`greatest(${gameProgress.runnerBestDistance}, ${data.distance})`,
+        runnerGems: sql`${gameProgress.runnerGems} + ${data.gems}`,
+        updatedAt: sql`now()`,
+      },
+    });
+}
+
 /** Progress rows joined with quiz titles, newest first — for the parent dashboard. */
 export function listChildProgressDetailed(db: Database, childId: string) {
   return db

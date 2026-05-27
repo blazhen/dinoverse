@@ -91,10 +91,17 @@ export default async function DashboardPage() {
                     <p className="mt-1 text-xs text-slate-500">
                       🎮 Expedition: {game.levelsCompleted} level
                       {game.levelsCompleted === 1 ? '' : 's'} done · reached level {game.highestLevel}{' '}
-                      · difficulty {game.difficulty}/10 · 💎 {game.gems}
+                      · difficulty {game.difficulty}/20 · 💎 {game.gems}
                     </p>
                   ) : (
                     <p className="mt-1 text-xs text-slate-400">🎮 No game progress yet</p>
+                  )}
+                  {game && game.runnerBestDistance > 0 ? (
+                    <p className="mt-1 text-xs text-slate-500">
+                      🦖 Dino Dash: best {game.runnerBestDistance}m · 💎 {game.runnerGems}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-slate-400">🦖 No Dino Dash runs yet</p>
                   )}
                 </li>
               );

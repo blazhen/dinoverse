@@ -135,6 +135,9 @@ export const gameProgress = pgTable('game_progress', {
   highestLevel: integer('highest_level').notNull().default(0),
   gems: integer('gems').notNull().default(0),
   setbacks: integer('setbacks').notNull().default(0),
+  // Dino Dash (3D runner) stats.
+  runnerBestDistance: integer('runner_best_distance').notNull().default(0),
+  runnerGems: integer('runner_gems').notNull().default(0),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
