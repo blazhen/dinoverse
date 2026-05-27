@@ -113,6 +113,9 @@ Last updated: 2026-05-23
 - [ ] Reusable puzzle/learning mini-game shell (React/DOM for simple puzzles)
 - [ ] Save game state per child (position, unlocked areas, abilities, collectibles) to Neon
 - [ ] Persist game-based learning outcomes into the shared progress/badges system
+- [ ] **3D "Dino Dash" endless runner** (Subway-Surfers-style) as a self-contained hub mini-game —
+      react-three-fiber/Three.js, 3-lane on-rails, swipe/arrow + jump + slide, gentle dodge-don't-fight.
+      Fast-follow AFTER the 2D core MVP (separate engine; needs rigged 3D dino model — bigger art lift).
 - [ ] 3D set-pieces for select scenes (later; evaluate react-three-fiber / Three.js)
 
 ## PHASE 3 — Module: Gamified Learning & Progression (quizzes = minor)

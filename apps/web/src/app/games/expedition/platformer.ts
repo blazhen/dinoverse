@@ -15,6 +15,11 @@ const RUN_SPEED = 210;
 const CRAWL_SPEED = 95;
 const GRAVITY_Y = 1100;
 
+// Mario-tight jump tuning.
+const COYOTE_MS = 110; // grace period to still jump after leaving a ledge
+const JUMP_BUFFER_MS = 120; // press jump slightly early and it still fires on landing
+const JUMP_CUT = 0.45; // release jump early → cut upward velocity (short hop)
+
 type Body = Phaser.Physics.Arcade.Body;
 
 interface Hero {
@@ -44,6 +49,9 @@ class ExpeditionScene extends Phaser.Scene {
   private dashEndAt = 0;
   private dashReadyAt = 0;
   private smashReadyAt = 0;
+  private lastGroundedAt = 0;
+  private jumpBufferedAt = -9999;
+  private wasGrounded = true;
   private won = false;
 
   constructor() {
@@ -195,6 +203,10 @@ class ExpeditionScene extends Phaser.Scene {
     // Reset crawl on the hero we're leaving.
     this.setCrawling(false);
     this.active = i;
+    // Reset jump state so the newly-controlled dino doesn't inherit coyote/buffer.
+    this.jumpBufferedAt = -9999;
+    this.lastGroundedAt = -9999;
+    this.wasGrounded = (this.getActive().box.body as Body).blocked.down;
     this.cameras.main.startFollow(this.getActive().box, true, 0.12, 0.12);
     this.updateHud();
   }
@@ -268,6 +280,12 @@ class ExpeditionScene extends Phaser.Scene {
     const body = a.box.body as Body;
     const onGround = body.blocked.down;
 
+    if (onGround) this.lastGroundedAt = time;
+    if (onGround && !this.wasGrounded && !this.won) {
+      this.puff(a.box.x, a.box.y + NORMAL_H / 2); // landing dust
+    }
+    this.wasGrounded = onGround;
+
     if (a.box.y > WORLD_H + 60) {
       body.setVelocity(0, 0);
       a.box.setPosition(a.start.x, a.start.y);
@@ -293,13 +311,25 @@ class ExpeditionScene extends Phaser.Scene {
         }
       }
 
-      const jumpPressed =
+      // Mario-tight jump: buffer the press, allow coyote time, and cut height on release.
+      if (
         Phaser.Input.Keyboard.JustDown(this.cursors.up) ||
         Phaser.Input.Keyboard.JustDown(this.keys.W!) ||
-        Phaser.Input.Keyboard.JustDown(this.cursors.space);
-      if (jumpPressed && onGround && !this.crawling) {
+        Phaser.Input.Keyboard.JustDown(this.cursors.space)
+      ) {
+        this.jumpBufferedAt = time;
+      }
+      const jumpHeld =
+        this.cursors.up.isDown || this.keys.W!.isDown || this.cursors.space.isDown;
+      const canJump = (onGround || time - this.lastGroundedAt <= COYOTE_MS) && !this.crawling;
+      if (canJump && time - this.jumpBufferedAt <= JUMP_BUFFER_MS) {
         body.setVelocityY(a.jump);
+        this.jumpBufferedAt = -9999;
+        this.lastGroundedAt = -9999; // consume coyote so we can't double-jump
         this.puff(a.box.x, a.box.y + NORMAL_H / 2);
+      }
+      if (!jumpHeld && body.velocity.y < 0) {
+        body.setVelocityY(body.velocity.y * JUMP_CUT); // short hop on early release
       }
 
       // Ability on Shift: Trik dashes, Stego smashes. (Brachio's ability is the high jump.)
