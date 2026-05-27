@@ -44,6 +44,15 @@ Hub (Dino City) → enter a level → traverse with platforming + the 3 dinos' a
 - **8–11:** full switch-and-split puzzles.
 - **12–14:** harder puzzles, more ability combos, co-op challenge levels.
 
+## Tech stack (locked 2026-05-27)
+**Web-first, one codebase, shipped to iOS/Android via Capacitor; playable on web/PWA too.**
+- **2D** games (platformer, puzzles, hub) → **Phaser**.
+- **Stylized 3D** games (e.g. the Dino Dash endless runner, low-poly worlds) → **Three.js**.
+- **App Store / Play Store + native features** (landscape lock, haptics, IAP, push) → **Capacitor**.
+- Native engines (Unity/Godot) intentionally NOT used: unnecessary for stylized 2D/3D kids' games,
+  and they'd break the build-and-verify workflow. Web 3D covers Subway-Surfers-grade games well;
+  only AAA/heavy 3D would need native.
+
 ## Art direction (target)
 Warm, hand-drawn 2D (Greak-like), bright palette. **Today = placeholder shapes + emoji**; real art is
 the Phase 6 pipeline (the biggest visual lift). 2D via **Phaser**; **Three.js only** for optional 3D

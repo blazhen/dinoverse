@@ -19,6 +19,13 @@ const games: GameCard[] = [
     tag: 'Platformer',
   },
   {
+    href: '/games/runner',
+    emoji: '🏃',
+    title: 'Dino Dash',
+    blurb: 'A 3D endless runner — switch lanes, jump and slide past obstacles, grab gems!',
+    tag: '3D runner',
+  },
+  {
     href: '/games/explore',
     emoji: '🗺️',
     title: 'Explore Dino City',
