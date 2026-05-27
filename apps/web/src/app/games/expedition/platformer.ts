@@ -171,8 +171,15 @@ class ExpeditionScene extends Phaser.Scene {
       Phaser.Input.Keyboard.Key
     >;
 
-    this.input.addPointer(3); // allow several simultaneous touches (move + jump + …)
-    this.createTouchControls();
+    // Only show on-screen controls on touch devices (coarse pointer); desktop uses the keyboard.
+    const isTouch =
+      typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: coarse)').matches;
+    if (isTouch) {
+      this.input.addPointer(3); // several simultaneous touches (move + jump + …)
+      this.createTouchControls();
+    }
 
     this.updateHud();
   }
@@ -236,36 +243,39 @@ class ExpeditionScene extends Phaser.Scene {
   }
 
   private createTouchControls() {
-    const bottom = VIEW_H - 92;
-    // Movement (left side).
-    this.touchButton(95, bottom, 46, '◀', {
+    const bottom = VIEW_H - 96;
+
+    // Movement — left thumb.
+    this.touchButton(108, bottom, 48, '◀', {
       onDown: () => (this.touch.left = true),
       onUp: () => (this.touch.left = false),
     });
-    this.touchButton(212, bottom, 46, '▶', {
+    this.touchButton(234, bottom, 48, '▶', {
       onDown: () => (this.touch.right = true),
       onUp: () => (this.touch.right = false),
     });
-    this.touchButton(154, bottom - 112, 36, '▼', {
-      onDown: () => (this.touch.down = true),
-      onUp: () => (this.touch.down = false),
-    });
-    // Actions (right side).
-    this.touchButton(VIEW_W - 95, bottom, 54, '▲', {
+
+    // Actions — right thumb. Jump is the big primary; crouch + ability grouped with it.
+    this.touchButton(VIEW_W - 112, bottom, 56, '▲', {
       onDown: () => {
         this.touch.jumpDown = true;
         this.touch.jumpPressed = true;
       },
       onUp: () => (this.touch.jumpDown = false),
     });
-    this.touchButton(VIEW_W - 212, bottom - 22, 44, '★', {
+    this.touchButton(VIEW_W - 246, bottom, 44, '▼', {
+      onDown: () => (this.touch.down = true),
+      onUp: () => (this.touch.down = false),
+    });
+    this.touchButton(VIEW_W - 150, bottom - 142, 46, '★', {
       onPress: () => (this.touch.abilityPressed = true),
     });
-    // Switch dino (top center).
+
+    // Switch dino — top-right, clear of the HUD text.
     const ids: Hero['id'][] = ['trik', 'stego', 'brachio'];
     const emojis = ['🦖', '🐢', '🦕'];
     ids.forEach((id, k) => {
-      this.touchButton(VIEW_W / 2 - 64 + k * 64, 46, 28, emojis[k]!, {
+      this.touchButton(VIEW_W - 206 + k * 66, 52, 29, emojis[k]!, {
         onPress: () => this.setActive(this.indexOf(id)),
       });
     });
