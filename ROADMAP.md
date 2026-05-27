@@ -145,8 +145,10 @@ Last updated: 2026-05-23
 - [ ] Real-time room/state server (Colyseus on Railway) — authoritative state, client prediction
 - [ ] **Friends-only invite-code rooms** (NO random matchmaking with strangers); room lifecycle + reconnect
 - [ ] Dino Dash multiplayer race: position sync, shared track, finish/ranking
-- [ ] Per-dino signature ability in-match (dash-boost / shield / reach) — one per player, no switching
-- [ ] Friendly item system (pick-up + use; bubble-trap, slow-goo, magnet, speed-boost; non-violent)
+- [ ] Per-dino signature ABILITY used on rivals (no switching) — temporary, non-damaging hindrances:
+      spider-web (trap/pull/slow), thunder-zap (brief stun/shrink), venom-blindness (short blur),
+      plus dash-boost + shield (block/cleanse). Mario-Kart-style; nobody is damaged or eliminated.
+- [ ] Ability + cooldown system with clear on-screen feedback ("you got webbed / zapped / blinded")
 - [ ] Steering/lane **assist for ages 5–7** so 5→15 can race together (Mario-Kart-8 model)
 - [ ] **Preset-only** child-safe communication (emotes/reactions; no free-form chat)
 - [ ] Anti-abuse + parental visibility into multiplayer activity

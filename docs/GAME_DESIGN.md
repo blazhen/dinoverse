@@ -58,11 +58,13 @@ items come alive.
   forward; you see each other; you grab pickups and use them. We pick the runner first because the
   netcode is far simpler (all moving one direction; items are simple events) and it directly matches
   "running together." Co-op *puzzle-platformer* (tight physics sync) is a harder, later mode.
-- **Each friend is one dino** → that dino's **signature ability** is their match power (no switching):
-  Trik = dash-boost, Stego = shield (block an incoming item / protect a teammate), Brachio = reach
-  (grab high pickups). One ability per player.
-- **Friendly items, not combat** (Mario-Kart-for-kids): bubble-trap (brief), slow-goo, magnet,
-  speed-boost. Nobody takes damage; nobody is eliminated — worst case you slow down. Keeps Pillar 4.
+- **Each friend is one dino with a signature ABILITY they use on rivals** (no switching) — this is
+  the heart of the multiplayer fun. Abilities are playful, **temporary, non-damaging** hindrances
+  (Mario-Kart-style — think Blooper ink / Lightning, not combat): **spider-web** (trap / pull /
+  slow), **thunder-zap** (brief stun or shrink), **venom-blindness** (short screen-obscure), plus
+  helpers like **dash-boost** and **shield** (block or cleanse an incoming ability). Final per-dino
+  assignment is TBD — the palette + rules are the point. **Nobody takes damage or is eliminated** —
+  worst case you're slowed/pulled/blinded for a couple seconds. Keeps Pillar 4.
 - **Cross-age in one race:** auto-run + **steering/lane assist for ages 5–7** so a 5-year-old and a
   14-year-old can play the same race (Mario Kart 8's auto-steer model). Item chaos keeps it fun for
   the older kids.
