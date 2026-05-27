@@ -14,15 +14,18 @@ export default function ExpeditionPage() {
         </Link>
       </div>
       <p className="text-sm text-slate-500">
-        Run, jump, dash, and crawl through the world. Collect gems and reach the nest 🪺. (Prototype
-        — placeholder art; character switching &amp; abilities coming next.)
+        Switch between three dino friends and use each one&apos;s special skill to get all three home
+        🏡. <span className="font-semibold">Trik ⚡</span> dashes across gaps,{' '}
+        <span className="font-semibold">Stego 🛡️</span> smashes cracked blocks, and{' '}
+        <span className="font-semibold">Brachiosaurus 🔭</span> jumps extra high. (Prototype —
+        placeholder art.)
       </p>
       <GameCanvas />
       <p className="text-xs text-slate-400">
-        Controls: <span className="font-semibold">←/→</span> or A/D to move ·{' '}
-        <span className="font-semibold">↑/Space</span> jump ·{' '}
-        <span className="font-semibold">Shift</span> dash · <span className="font-semibold">↓</span>{' '}
-        crawl under low gaps.
+        Controls: <span className="font-semibold">1 / 2 / 3</span> (or Q) switch dino ·{' '}
+        <span className="font-semibold">←/→</span> or A/D move ·{' '}
+        <span className="font-semibold">↑/Space</span> jump · <span className="font-semibold">Shift</span>{' '}
+        ability · <span className="font-semibold">↓</span> crawl.
       </p>
     </main>
   );
