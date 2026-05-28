@@ -1,27 +1,86 @@
-import { Schema, MapSchema, type } from '@colyseus/schema';
+import { Schema, MapSchema, defineTypes } from '@colyseus/schema';
 import { Room, type Client } from 'colyseus';
 
-// One racer's synced state. Position (distance/lane/y) is reported by that player's client a few
-// times/sec; the room is the authority for ready/hearts/finish/place.
+// ── Why this file looks weird (no @type decorators, `declare` fields, defineTypes call) ──
+//
+// @colyseus/schema relies on a prototype getter/setter (installed by the @type decorator) to
+// stamp metadata like `$childType` onto MapSchema/ArraySchema instances. With TypeScript's
+// default `useDefineForClassFields: true` (the ES2022 default), `players = new MapSchema()`
+// compiles to `Object.defineProperty(this, 'players', { value: ... })` — which DEFINES AN OWN
+// PROPERTY that SHADOWS the prototype setter. The setter never runs, `$childType` is never
+// set, and the encoder eventually crashes with:
+//   "Cannot read properties of undefined (reading 'Symbol(Symbol.metadata)')".
+//
+// `useDefineForClassFields: false` in tsconfig fixes it locally, but tsx + esbuild on Railway
+// (production) ignores the flag in our pnpm-workspaces layout. Rather than fight the toolchain,
+// we use Colyseus's documented decorator-free API: `declare` fields (TypeScript-only, no
+// runtime emit) + a `defineTypes()` call after the class body to attach metadata via the same
+// underlying decorator function. Initial values are assigned in the constructor, where simple
+// `this.x = y` always flows through the prototype setter regardless of compiler config.
+//
+// Behaviour is identical to the decorator version — the wire format is byte-for-byte the same.
+
+/** One racer's synced state. Position (distance/lane/y) is reported by that player's client a
+ *  few times/sec; the room is the authority for ready/hearts/finish/place. */
 export class PlayerState extends Schema {
-  @type('string') id = '';
-  @type('string') name = 'Dino';
-  @type('string') character = 'trik';
-  @type('boolean') ready = false;
-  @type('number') distance = 0;
-  @type('number') lane = 1;
-  @type('number') y = 0;
-  @type('number') hearts = 3;
-  @type('boolean') finished = false;
-  @type('number') place = 0;
+  declare id: string;
+  declare name: string;
+  declare character: string;
+  declare ready: boolean;
+  declare distance: number;
+  declare lane: number;
+  declare y: number;
+  declare hearts: number;
+  declare finished: boolean;
+  declare place: number;
+
+  constructor() {
+    super();
+    this.id = '';
+    this.name = 'Dino';
+    this.character = 'trik';
+    this.ready = false;
+    this.distance = 0;
+    this.lane = 1;
+    this.y = 0;
+    this.hearts = 3;
+    this.finished = false;
+    this.place = 0;
+  }
 }
+defineTypes(PlayerState, {
+  id: 'string',
+  name: 'string',
+  character: 'string',
+  ready: 'boolean',
+  distance: 'number',
+  lane: 'number',
+  y: 'number',
+  hearts: 'number',
+  finished: 'boolean',
+  place: 'number',
+});
 
 export class RaceState extends Schema {
-  @type('number') seed = 0; // all clients build the SAME track from this
-  @type('string') phase: 'lobby' | 'countdown' | 'racing' | 'finished' = 'lobby';
-  @type('number') startsAt = 0; // epoch ms the race begins (for the 3-2-1)
-  @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
+  declare seed: number; // all clients build the SAME track from this
+  declare phase: 'lobby' | 'countdown' | 'racing' | 'finished';
+  declare startsAt: number; // epoch ms the race begins (for the 3-2-1)
+  declare players: MapSchema<PlayerState>;
+
+  constructor() {
+    super();
+    this.seed = 0;
+    this.phase = 'lobby';
+    this.startsAt = 0;
+    this.players = new MapSchema<PlayerState>();
+  }
 }
+defineTypes(RaceState, {
+  seed: 'number',
+  phase: 'string',
+  startsAt: 'number',
+  players: { map: PlayerState },
+});
 
 interface JoinOptions {
   name?: string;
