@@ -98,7 +98,8 @@ export default async function DashboardPage() {
                   )}
                   {game && game.runnerBestDistance > 0 ? (
                     <p className="mt-1 text-xs text-slate-500">
-                      🦖 Dino Dash: best {game.runnerBestDistance}m · 💎 {game.runnerGems}
+                      🦖 Dino Dash: best {game.runnerBestDistance}m · 💨 {game.runnerBestSpeed} km/h · 💎{' '}
+                      {game.runnerGems}
                     </p>
                   ) : (
                     <p className="mt-1 text-xs text-slate-400">🦖 No Dino Dash runs yet</p>

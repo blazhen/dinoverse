@@ -138,6 +138,7 @@ export const gameProgress = pgTable('game_progress', {
   // Dino Dash (3D runner) stats.
   runnerBestDistance: integer('runner_best_distance').notNull().default(0),
   runnerGems: integer('runner_gems').notNull().default(0),
+  runnerBestSpeed: integer('runner_best_speed').notNull().default(0), // fastest km/h reached (the "rank")
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 

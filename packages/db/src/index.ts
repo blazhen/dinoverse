@@ -117,20 +117,26 @@ export async function recordLevelComplete(
     });
 }
 
-/** Dino Dash result: keep the best distance and add to total gems. */
+/** Dino Dash result: keep the best distance + best speed (rank), and add to total gems. */
 export async function recordRunnerResult(
   db: Database,
   childId: string,
-  data: { distance: number; gems: number },
+  data: { distance: number; gems: number; topSpeed: number },
 ) {
   await db
     .insert(gameProgress)
-    .values({ childId, runnerBestDistance: data.distance, runnerGems: data.gems })
+    .values({
+      childId,
+      runnerBestDistance: data.distance,
+      runnerGems: data.gems,
+      runnerBestSpeed: data.topSpeed,
+    })
     .onConflictDoUpdate({
       target: gameProgress.childId,
       set: {
         runnerBestDistance: sql`greatest(${gameProgress.runnerBestDistance}, ${data.distance})`,
         runnerGems: sql`${gameProgress.runnerGems} + ${data.gems}`,
+        runnerBestSpeed: sql`greatest(${gameProgress.runnerBestSpeed}, ${data.topSpeed})`,
         updatedAt: sql`now()`,
       },
     });

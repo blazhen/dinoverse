@@ -1,0 +1,1 @@
+ALTER TABLE "game_progress" ADD COLUMN "runner_best_speed" integer DEFAULT 0 NOT NULL;

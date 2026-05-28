@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { DinoType } from './dino-character';
+import { RunnerAudio } from './runner-audio';
 import type { RunnerHandle, RunnerOptions, RunnerStats, RunnerView } from './runner';
 
 // Our profile roster uses 'brachiosaurus'; the dino rig calls it 'brachio'.
@@ -17,21 +18,21 @@ function dinoFor(avatar?: string): DinoType {
 function optsForAge(ageBand?: string): RunnerOptions {
   switch (ageBand) {
     case '5-6':
-      return { startSpeed: 9, accel: 0.4 };
+      return { startSpeed: 11, accel: 0.6 };
     case '7-8':
-      return { startSpeed: 11, accel: 0.5 };
+      return { startSpeed: 13, accel: 0.8 };
     case '9-10':
-      return { startSpeed: 12, accel: 0.6 };
+      return { startSpeed: 15, accel: 1.0 };
     case '11-12':
-      return { startSpeed: 14, accel: 0.7 };
+      return { startSpeed: 17, accel: 1.2 };
     case '13-14':
-      return { startSpeed: 15, accel: 0.8 };
+      return { startSpeed: 19, accel: 1.4 };
     default:
-      return { startSpeed: 12, accel: 0.6 };
+      return { startSpeed: 15, accel: 1.0 };
   }
 }
 
-const EMPTY_STATS: RunnerStats = { distance: 0, gems: 0, hearts: 3, shield: false, magnet: false, speed: 0, breakReady: true };
+const EMPTY_STATS: RunnerStats = { distance: 0, gems: 0, hearts: 3, shield: false, magnet: false, speed: 0, breakReady: true, combo: 1 };
 
 export function RunnerCanvas() {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -40,6 +41,7 @@ export function RunnerCanvas() {
   const persistRef = useRef(false); // only save when a child profile is active
   const profileRef = useRef<{ ageBand?: string; avatarCharacter?: string }>({});
   const topSpeedRef = useRef(0); // fastest speed reached this run (internal units) — the "rank"
+  const audioRef = useRef<RunnerAudio | null>(null);
 
   const [stats, setStats] = useState<RunnerStats>(EMPTY_STATS);
   const [best, setBest] = useState(0);
@@ -49,6 +51,13 @@ export function RunnerCanvas() {
   const [finalScore, setFinalScore] = useState({ distance: 0, gems: 0, newBest: false, topSpeed: 0 });
   const [runeMsg, setRuneMsg] = useState<string | null>(null); // "what you got" popup
   const [charging, setCharging] = useState(false); // shown if 💥 pressed while on cooldown
+  const [muted, setMuted] = useState(() => {
+    try {
+      return localStorage.getItem('dinoDashMuted') === '1';
+    } catch {
+      return false;
+    }
+  });
   const runeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chargeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -82,6 +91,8 @@ export function RunnerCanvas() {
       cancelled = true;
       handleRef.current?.destroy();
       handleRef.current = null;
+      audioRef.current?.dispose();
+      audioRef.current = null;
     };
   }, []);
 
@@ -115,7 +126,7 @@ export function RunnerCanvas() {
       void fetch('/api/game/progress', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ kind: 'runner', distance, gems }),
+        body: JSON.stringify({ kind: 'runner', distance, gems, topSpeed: Math.round(topSpeedRef.current * 3.6) }),
       }).catch(() => {});
     }
   };
@@ -124,12 +135,24 @@ export function RunnerCanvas() {
   async function start(view: RunnerView) {
     setStarted(true);
     topSpeedRef.current = 0;
+    // Create + resume audio inside the Play tap (browsers require a gesture to start sound).
+    audioRef.current ??= new RunnerAudio();
+    const audio = audioRef.current;
+    audio.resume();
     const { createRunner } = await import('./runner');
     if (!mountRef.current || handleRef.current) return;
     const opts: RunnerOptions = {
       ...optsForAge(profileRef.current.ageBand),
       character: dinoFor(profileRef.current.avatarCharacter),
       view,
+      sfx: {
+        jump: () => audio.jump(),
+        coin: () => audio.coin(),
+        smash: () => audio.smash(),
+        hit: () => audio.hit(),
+        rune: () => audio.rune(),
+        boost: () => audio.boost(),
+      },
     };
     handleRef.current = createRunner(mountRef.current, { onUpdate, onGameOver, onRune: showRune }, opts);
   }
@@ -140,6 +163,12 @@ export function RunnerCanvas() {
     setStats(EMPTY_STATS);
     topSpeedRef.current = 0;
     handleRef.current?.restart();
+  }
+
+  function toggleMute() {
+    const next = !muted;
+    setMuted(next);
+    audioRef.current?.setMuted(next);
   }
 
   function togglePause(next: boolean) {
@@ -170,16 +199,26 @@ export function RunnerCanvas() {
             {stats.shield && <span className="ml-2">🛡️</span>}
             {stats.magnet && <span className="ml-1">🧲</span>}
           </div>
+          {stats.combo > 1 && <div className="text-base font-black text-amber-300 drop-shadow">🔥 Combo x{stats.combo}</div>}
           {best > 0 && <div className="text-xs font-semibold text-white/80">Best: {best}m</div>}
         </div>
       )}
+
+      {/* Mute toggle (always available) */}
+      <button
+        type="button"
+        onClick={toggleMute}
+        className="pointer-events-auto absolute right-3 top-2 rounded-full bg-white/20 px-3 py-1.5 text-base font-bold text-white backdrop-blur active:bg-white/40"
+      >
+        {muted ? '🔇' : '🔊'}
+      </button>
 
       {/* Pause button (single-player) */}
       {started && !over && !paused && (
         <button
           type="button"
           onClick={() => togglePause(true)}
-          className="pointer-events-auto absolute right-3 top-2 rounded-full bg-white/20 px-3 py-1.5 text-sm font-bold text-white backdrop-blur active:bg-white/40"
+          className="pointer-events-auto absolute right-3 top-14 rounded-full bg-white/20 px-3 py-1.5 text-sm font-bold text-white backdrop-blur active:bg-white/40"
         >
           ⏸ Pause
         </button>

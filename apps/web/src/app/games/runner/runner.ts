@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 
 import { DinoCharacter, type DinoType } from './dino-character';
+import type { RunnerSfx } from './runner-audio';
 
 // Subway-Surfers-style 3D endless runner. Cartoony procedural dinos (DinoCharacter) run a 3-lane
 // track. Pure Three.js; runs on web, wraps to iOS/Android via Capacitor.
@@ -10,6 +11,22 @@ const DINO_SCALE = 0.32; // overall dino size (now drives all axes correctly —
 const DINO_FOOT_LIFT = DINO_SCALE * 0.3; // derived: raises the feet to ground level at any scale
 const HIGH_OBSTACLE_Y = 1.35; // "slide under" bar — sits at the standing dino's head so you must duck
 
+// Scenery palettes the run cycles through (sky / fog / ground / lane-stripe / trees).
+const BIOME_LENGTH = 500; // meters per biome
+const BIOMES = [
+  { sky: 0xbae6fd, fog: 0xbae6fd, ground: 0x4d7c0f, stripe: 0x65a30d, tree: 0x166534 }, // grassland
+  { sky: 0xfde68a, fog: 0xfde68a, ground: 0xb45309, stripe: 0xd97706, tree: 0x4d7c0f }, // desert
+  { sky: 0xe0f2fe, fog: 0xe7f5ff, ground: 0x93c5fd, stripe: 0xdbeafe, tree: 0x60a5fa }, // ice
+  { sky: 0xb91c1c, fog: 0xb91c1c, ground: 0x451a03, stripe: 0xea580c, tree: 0x7f1d1d }, // lava
+  { sky: 0x1e1b4b, fog: 0x1e1b4b, ground: 0x312e81, stripe: 0x818cf8, tree: 0x4338ca }, // night
+].map((b) => ({
+  sky: new THREE.Color(b.sky),
+  fog: new THREE.Color(b.fog),
+  ground: new THREE.Color(b.ground),
+  stripe: new THREE.Color(b.stripe),
+  tree: new THREE.Color(b.tree),
+}));
+
 export interface RunnerStats {
   distance: number;
   gems: number;
@@ -18,6 +35,7 @@ export interface RunnerStats {
   magnet: boolean;
   speed: number; // current run speed in internal units/sec
   breakReady: boolean; // 💥 smash is off cooldown
+  combo: number; // coin combo multiplier (1 = none)
 }
 export interface RunnerCallbacks {
   onUpdate: (s: RunnerStats) => void;
@@ -30,6 +48,7 @@ export interface RunnerOptions {
   accel?: number;
   character?: DinoType;
   view?: RunnerView; // chosen BEFORE the run (fixed for the session — fair in multiplayer)
+  sfx?: RunnerSfx; // sound hooks (jump/coin/smash/hit/rune/boost)
 }
 export interface RunnerHandle {
   destroy: () => void;
@@ -87,7 +106,7 @@ function makeSpeedSpriteMaterial(km: number): THREE.SpriteMaterial {
 export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: RunnerOptions = {}): RunnerHandle {
   const START_SPEED = opts.startSpeed ?? 12;
   const ACCEL = opts.accel ?? 0.6; // auto-accel climbs only to AUTO_CAP; ⚡ boosts go beyond
-  const AUTO_CAP = 60 / 3.6; // auto-speed tops out at 60 km/h; the rest is earned via speed boosts
+  const AUTO_CAP = 100 / 3.6; // auto-speed climbs to 100 km/h; beyond that is earned via ⚡ boosts
   const MIN_SPEED = 6; // floor after collision penalties (~22 km/h)
   const VIEW: RunnerView = opts.view ?? 'follow';
 
@@ -109,14 +128,17 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   sun.position.set(6, 12, 8);
   scene.add(sun);
 
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(9, 400), new THREE.MeshStandardMaterial({ color: 0x4d7c0f }));
+  const groundMat = new THREE.MeshStandardMaterial({ color: 0x4d7c0f });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(9, 400), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.position.z = -180;
   scene.add(ground);
 
+  const stripeMat = new THREE.MeshStandardMaterial({ color: 0x65a30d });
+  const stripeGeo = new THREE.BoxGeometry(0.1, 0.02, 2);
   const stripes: THREE.Mesh[] = [];
   for (let i = 0; i < 30; i++) {
-    const s = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.02, 2), new THREE.MeshStandardMaterial({ color: 0x65a30d }));
+    const s = new THREE.Mesh(stripeGeo, stripeMat);
     s.position.set(1.1, 0.02, -i * 6);
     scene.add(s);
     stripes.push(s);
@@ -126,9 +148,11 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     stripes.push(s2);
   }
 
+  const treeMat = new THREE.MeshStandardMaterial({ color: 0x166534 });
+  const treeGeo = new THREE.ConeGeometry(0.8, 2.4, 6);
   const decos: THREE.Mesh[] = [];
   for (let i = 0; i < 22; i++) {
-    const tree = new THREE.Mesh(new THREE.ConeGeometry(0.8, 2.4, 6), new THREE.MeshStandardMaterial({ color: 0x166534 }));
+    const tree = new THREE.Mesh(treeGeo, treeMat);
     tree.position.set((i % 2 ? 1 : -1) * 5.8, 1.2, -i * 11);
     scene.add(tree);
     decos.push(tree);
@@ -156,7 +180,6 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     mesh: THREE.Mesh;
     lane: number;
     type: 'low' | 'high';
-    bumped?: boolean; // a side-bump penalty was already applied (don't repeat it)
     shadow?: THREE.Mesh; // ground shadow under flying (high) boxes
   }
   interface Breakable {
@@ -174,9 +197,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   const breakables: Breakable[] = []; // 💥 to smash for a rune — gold (1 tap, 1 lane) or crate (2 taps, 2 lanes)
 
   let laneIndex = 1;
-  let lastLane = 1; // lane we came from (to bounce back on a side-bump)
   let velY = 0;
   let jumping = false;
+  let grounded = true; // on the ground OR standing on a box
   let slideUntil = 0;
   let fastFalling = false; // airborne slide-press → drop fast to the ground
   let slideQueued = false; // a 2nd airborne press → slide once we land
@@ -184,6 +207,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   let smashWindowUntil = 0; // how long that queued press stays live
   let breakCooldownUntil = 0; // 2s cooldown after a successful break
   let attackUntil = 0; // play the smash animation until this time
+  let comboCount = 0; // consecutive coins (for the multiplier)
+  let comboUntil = 0; // the coin streak ends if none collected by this time
+  let shakeUntil = 0; // camera shakes until this time (on hit)
   let speed = START_SPEED;
   let distance = 0;
   let gemCount = 0;
@@ -202,7 +228,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   const highMat = new THREE.MeshStandardMaterial({ color: 0x2563eb }); // blue = SLIDE under (flying bar)
   const gemMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0ea5e9, emissiveIntensity: 0.4 });
   const magnetIconMat = makeEmojiSpriteMaterial('🧲'); // the only floating power-up now (rare); shield is a crate rune
-  const speedMats: Record<number, THREE.SpriteMaterial> = { 2: makeSpeedSpriteMaterial(2), 5: makeSpeedSpriteMaterial(5), 10: makeSpeedSpriteMaterial(10) };
+  const speedMats: Record<number, THREE.SpriteMaterial> = { 5: makeSpeedSpriteMaterial(5), 10: makeSpeedSpriteMaterial(10), 15: makeSpeedSpriteMaterial(15) };
   const shadowGeo = new THREE.CircleGeometry(0.32, 16); // ground shadow under flying boosts (height cue)
   const shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22, depthWrite: false });
   const boxShadowGeo = new THREE.PlaneGeometry(1.5, 1.0); // wider shadow under flying (high) boxes
@@ -212,6 +238,12 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   const crateGeo = new THREE.BoxGeometry(3.6, 1.6, 1); // grey crate spans TWO lanes
   const crateMat = new THREE.MeshStandardMaterial({ color: 0x78716c }); // stone crate = 2-tap "double wall"
   const crateIconMat = makeEmojiSpriteMaterial('📦'); // marks the tough crate
+  // Juice: little particles for coins / smashes / landings.
+  const particleGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
+  const coinPMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
+  const dustPMat = new THREE.MeshBasicMaterial({ color: 0xe7e5e4, transparent: true, opacity: 0.85 });
+  const debrisPMat = new THREE.MeshBasicMaterial({ color: 0xca8a04 });
+  const particles: { mesh: THREE.Mesh; vx: number; vy: number; vz: number; life: number; max: number }[] = [];
 
   function spawnRow(z: number) {
     // Rare 2-lane stone-crate row: blocks two lanes (smash with two 💥 taps, or dodge to the free lane).
@@ -291,8 +323,8 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     // Rare speed boost — a jump-height ⚡ icon; bigger boosts spawn higher (harder to reach).
     if (Math.random() < 0.08) {
       const r = Math.random();
-      const amount = r < 0.6 ? 2 : r < 0.9 ? 5 : 10; // +2 common, +5 uncommon, +10 rare
-      const y = amount === 2 ? 1.6 : amount === 5 ? 2.2 : 2.9;
+      const amount = r < 0.6 ? 5 : r < 0.9 ? 10 : 15; // +5 common, +10 uncommon, +15 rare
+      const y = amount === 5 ? 1.6 : amount === 10 ? 2.2 : 2.9;
       const lane = Math.floor(Math.random() * 3);
       const mesh = new THREE.Sprite(speedMats[amount]!);
       mesh.scale.set(0.85, 0.85, 0.85);
@@ -316,6 +348,17 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       if (b.shadow) scene.remove(b.shadow);
     }
     breakables.length = 0;
+    for (const p of particles) scene.remove(p.mesh);
+    particles.length = 0;
+    comboCount = 0;
+    comboUntil = 0;
+    shakeUntil = 0;
+    // Snap scenery back to the first biome (grassland).
+    (scene.background as THREE.Color).copy(BIOMES[0]!.sky);
+    scene.fog!.color.copy(BIOMES[0]!.fog);
+    groundMat.color.copy(BIOMES[0]!.ground);
+    stripeMat.color.copy(BIOMES[0]!.stripe);
+    treeMat.color.copy(BIOMES[0]!.tree);
     for (const g of gems) scene.remove(g.mesh);
     gems.length = 0;
     for (const p of powerups) scene.remove(p.mesh);
@@ -323,9 +366,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     for (const s of speedups) scene.remove(s.mesh, s.shadow);
     speedups.length = 0;
     laneIndex = 1;
-    lastLane = 1;
     velY = 0;
     jumping = false;
+    grounded = true;
     slideUntil = 0;
     fastFalling = false;
     slideQueued = false;
@@ -348,8 +391,38 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     emit();
   }
 
+  function comboMult() {
+    return Math.min(5, 1 + Math.floor(comboCount / 5)); // x2 at 5 coins, x3 at 10, … capped x5
+  }
+
   function emit() {
-    cb.onUpdate({ distance: Math.floor(distance), gems: gemCount, hearts, shield: shieldActive, magnet: clock.elapsedTime < magnetUntil, speed, breakReady: clock.elapsedTime >= breakCooldownUntil });
+    cb.onUpdate({
+      distance: Math.floor(distance),
+      gems: gemCount,
+      hearts,
+      shield: shieldActive,
+      magnet: clock.elapsedTime < magnetUntil,
+      speed,
+      breakReady: clock.elapsedTime >= breakCooldownUntil,
+      combo: comboMult(),
+    });
+  }
+
+  // Spawn a few short-lived particles (coins/smashes/landing dust).
+  function burst(x: number, y: number, z: number, mat: THREE.Material, count: number, spread: number, up: number) {
+    for (let i = 0; i < count; i++) {
+      const m = new THREE.Mesh(particleGeo, mat);
+      m.position.set(x, y, z);
+      scene.add(m);
+      particles.push({
+        mesh: m,
+        vx: (Math.random() - 0.5) * spread,
+        vy: up + Math.random() * spread * 0.5,
+        vz: (Math.random() - 0.5) * spread,
+        life: 0.5,
+        max: 0.5,
+      });
+    }
   }
 
   function hit() {
@@ -364,6 +437,8 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     hearts -= 1;
     speed = Math.max(MIN_SPEED, speed / 1.3); // a real hit costs ~23% of your speed
     invulnUntil = clock.elapsedTime + 1.3;
+    shakeUntil = clock.elapsedTime + 0.3; // screen shake
+    opts.sfx?.hit?.();
     emit();
     if (hearts <= 0) {
       over = true;
@@ -374,6 +449,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
 
   // A random reward for smashing a breakable; returns a label for the on-screen popup.
   function grantRune(): string {
+    opts.sfx?.rune?.();
     const r = Math.floor(Math.random() * 5);
     let label: string;
     if (r === 0) {
@@ -396,6 +472,24 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     return label;
   }
 
+  // The top surface the player can stand on right now (a box under them), else 0 (the ground).
+  // `prevY` (last frame's feet height) gates it so you only land coming DOWN onto a box — you
+  // never pop up onto one you ran into from the side.
+  function groundUnder(prevY: number): number {
+    const px = player.position.x;
+    let g = 0;
+    // Only LOW (ground) boxes are standable — flying bars and tall crates are not platforms.
+    for (const o of obstacles) {
+      if (o.type !== 'low') continue;
+      if (Math.abs(o.mesh.position.z) < 0.9 && Math.abs(o.mesh.position.x - px) < 0.7 && prevY >= 1.0) g = Math.max(g, 1.1);
+    }
+    for (const b of breakables) {
+      if (b.resolved || b.shape !== 'low') continue;
+      if (Math.abs(b.mesh.position.z) < 0.9 && Math.abs(b.mesh.position.x - px) < b.halfW && prevY >= 1.0) g = Math.max(g, 1.1);
+    }
+    return g;
+  }
+
   function loop() {
     raf = requestAnimationFrame(loop);
     const dt = Math.min(clock.getDelta(), 0.05); // consume delta every frame (no jump on resume)
@@ -410,23 +504,42 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     }
     const t = clock.elapsedTime;
 
-    if (speed < AUTO_CAP) speed = Math.min(speed + dt * ACCEL, AUTO_CAP); // auto only to 60 km/h
+    if (speed < AUTO_CAP) speed = Math.min(speed + dt * ACCEL, AUTO_CAP); // auto only to 100 km/h
     distance += speed * dt;
     const dz = speed * dt;
 
+    // Biome: drift scene colors toward the current zone's palette (changes every BIOME_LENGTH m).
+    const biome = BIOMES[Math.floor(distance / BIOME_LENGTH) % BIOMES.length]!;
+    const lerpK = Math.min(1, dt * 1.5);
+    (scene.background as THREE.Color).lerp(biome.sky, lerpK);
+    scene.fog!.color.lerp(biome.fog, lerpK);
+    groundMat.color.lerp(biome.ground, lerpK);
+    stripeMat.color.lerp(biome.stripe, lerpK);
+    treeMat.color.lerp(biome.tree, lerpK);
+
     player.position.x += (LANES[laneIndex]! - player.position.x) * Math.min(1, dt * 12);
 
-    if (jumping) {
+    const groundY = groundUnder(player.position.y); // 0, or the top of a box we're descending onto
+    if (jumping || velY > 0.001 || player.position.y > groundY + 0.02) {
+      // Airborne: rising from a jump, or falling (incl. walking off the edge of a box).
       velY -= 42 * dt;
       player.position.y += velY * dt;
-      if (player.position.y <= 0) {
-        player.position.y = 0;
-        jumping = false;
+      if (velY <= 0 && player.position.y <= groundY) {
+        const impact = velY;
+        player.position.y = groundY; // land on the ground or a box top
         velY = 0;
-        if (slideQueued) slideUntil = clock.elapsedTime + 0.6; // double-tapped in the air → slide now
+        if (jumping && slideQueued) slideUntil = clock.elapsedTime + 0.6; // double-tapped mid-air → slide now
+        jumping = false;
         fastFalling = false;
         slideQueued = false;
+        grounded = true;
+        if (impact < -10) burst(player.position.x, groundY + 0.05, player.position.z, dustPMat, 4, 1.6, 0.3);
+      } else {
+        grounded = false;
       }
+    } else {
+      player.position.y = groundY; // resting on the ground or atop a box
+      grounded = true;
     }
 
     const sliding = t < slideUntil;
@@ -450,6 +563,12 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       camera.position.set(0, 4.4, 8.5);
       camera.lookAt(0, 1.2, -8);
     }
+    if (t < shakeUntil) {
+      const amt = ((shakeUntil - t) / 0.3) * 0.22; // decays over 0.3s
+      camera.position.x += (Math.random() - 0.5) * amt;
+      camera.position.y += (Math.random() - 0.5) * amt;
+    }
+    if (comboCount > 0 && t > comboUntil) comboCount = 0; // streak timed out
 
     for (const o of obstacles) {
       o.mesh.position.z += dz;
@@ -488,19 +607,11 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         obstacles.splice(i, 1);
         continue;
       }
-      if (Math.abs(o.mesh.position.z) < 0.8 + dz) {
-        const dx = o.mesh.position.x - player.position.x;
-        const settled = Math.abs(player.position.x - LANES[laneIndex]!) < 0.35;
-        if (settled && Math.abs(dx) < 0.9) {
-          // Head-on: squarely in the lane and ran into it → real hit (heart + big speed loss).
-          if (o.type === 'low' && player.position.y < 1.0) hit();
-          else if (o.type === 'high' && !sliding) hit();
-        } else if (!settled && laneIndex === o.lane && !o.bumped && Math.abs(dx) < 0.9) {
-          // Side-bump: switching INTO a box beside you → blocked + small speed loss, no heart.
-          o.bumped = true;
-          speed = Math.max(MIN_SPEED, speed / 1.1);
-          laneIndex = lastLane;
-        }
+      // Your body physically overlaps the box at the player plane → hit (unless you cleared it
+      // vertically). No "settled" gate, so you can't slip through by switching lanes fast.
+      if (Math.abs(o.mesh.position.z) < 0.8 + dz && Math.abs(o.mesh.position.x - player.position.x) < 0.9) {
+        if (o.type === 'low' && player.position.y < 1.0) hit(); // jump over or land on top
+        else if (o.type === 'high' && !sliding) hit(); // flying bar: must SLIDE under — no jumping over
       }
     }
     for (let i = breakables.length - 1; i >= 0; i--) {
@@ -520,9 +631,11 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         b.hp -= 1;
         if (b.hp <= 0) {
           b.resolved = true;
+          burst(b.mesh.position.x, 1.0, b.mesh.position.z, debrisPMat, 8, 4, 2);
           scene.remove(b.mesh);
           if (b.shadow) scene.remove(b.shadow);
           breakables.splice(i, 1);
+          opts.sfx?.smash?.();
           cb.onRune?.(grantRune());
           breakCooldownUntil = t + 3; // 3s cooldown after a successful break
           continue;
@@ -530,10 +643,12 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         b.mesh.scale.multiplyScalar(0.82); // cracked — one wall down
       }
       // Passes unbroken: gold can be jumped (low) / slid under (high); a crate always blocks.
-      const settled = Math.abs(player.position.x - LANES[laneIndex]!) < 0.35;
-      if (!b.resolved && bz >= 0.9 && bz < 1.8 && aligned && settled) {
+      // Upper bound widens with speed so a fast box can't skip the window in one frame.
+      if (!b.resolved && bz >= 0.9 && bz < 1.8 + dz && aligned) {
         b.resolved = true;
-        const avoided = (b.shape === 'low' && player.position.y >= 1.0) || (b.shape === 'high' && sliding);
+        const avoided =
+          (b.shape === 'low' && player.position.y >= 1.0) || // jump over / stand on a ground box
+          (b.shape === 'high' && sliding); // flying box: SLIDE under (or smash mid-jump). Crate: smash/dodge only.
         if (!avoided) hit();
       }
     }
@@ -548,9 +663,16 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       const near = Math.abs(g.mesh.position.z) < (magnetOn ? 2.6 : 0.8) + dz;
       const laneOk = magnetOn ? Math.abs(g.mesh.position.x - player.position.x) < 3 : g.lane === laneIndex;
       if (near && laneOk) {
+        const gx = g.mesh.position.x;
+        const gz = g.mesh.position.z;
         scene.remove(g.mesh);
         gems.splice(i, 1);
-        gemCount += 1;
+        if (t > comboUntil) comboCount = 0; // streak broke
+        comboCount += 1;
+        comboUntil = t + 1.2;
+        gemCount += comboMult(); // worth more during a combo
+        opts.sfx?.coin?.();
+        burst(gx, 1.0, gz, coinPMat, 5, 3, 1.5);
       }
     }
     for (let i = powerups.length - 1; i >= 0; i--) {
@@ -581,8 +703,24 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         scene.remove(s.mesh, s.shadow);
         speedups.splice(i, 1);
         speed += s.amount / 3.6; // +km/h → internal units/sec
+        opts.sfx?.boost?.();
         emit();
       }
+    }
+
+    for (let i = particles.length - 1; i >= 0; i--) {
+      const p = particles[i]!;
+      p.life -= dt;
+      if (p.life <= 0) {
+        scene.remove(p.mesh);
+        particles.splice(i, 1);
+        continue;
+      }
+      p.vy -= 14 * dt; // gravity
+      p.mesh.position.x += p.vx * dt;
+      p.mesh.position.y += p.vy * dt;
+      p.mesh.position.z += p.vz * dt + dz; // drift back with the world
+      p.mesh.scale.setScalar(0.4 + (p.life / p.max) * 0.8);
     }
 
     if (t - lastHud > 0.12) {
@@ -594,25 +732,17 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   }
 
   const moveLeft = () => {
-    if (over) return;
-    const next = Math.max(0, laneIndex - 1);
-    if (next !== laneIndex) {
-      lastLane = laneIndex;
-      laneIndex = next;
-    }
+    if (!over) laneIndex = Math.max(0, laneIndex - 1);
   };
   const moveRight = () => {
-    if (over) return;
-    const next = Math.min(2, laneIndex + 1);
-    if (next !== laneIndex) {
-      lastLane = laneIndex;
-      laneIndex = next;
-    }
+    if (!over) laneIndex = Math.min(2, laneIndex + 1);
   };
   const jump = () => {
-    if (!over && !jumping && player.position.y === 0) {
+    if (!over && grounded && !jumping) {
       jumping = true;
       velY = 15;
+      grounded = false;
+      opts.sfx?.jump?.();
     }
   };
   const slide = () => {
@@ -706,6 +836,15 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       crateMat.dispose();
       crateIconMat.map?.dispose();
       crateIconMat.dispose();
+      particleGeo.dispose();
+      coinPMat.dispose();
+      dustPMat.dispose();
+      debrisPMat.dispose();
+      groundMat.dispose();
+      stripeMat.dispose();
+      stripeGeo.dispose();
+      treeMat.dispose();
+      treeGeo.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === parent) parent.removeChild(renderer.domElement);
     },

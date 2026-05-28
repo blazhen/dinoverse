@@ -34,7 +34,8 @@ export async function POST(req: Request) {
 
   if (body.kind === 'runner') {
     const distance = Math.max(0, Math.floor(Number(body.distance) || 0));
-    await recordRunnerResult(db, child.id, { distance, gems });
+    const topSpeed = Math.max(0, Math.floor(Number(body.topSpeed) || 0));
+    await recordRunnerResult(db, child.id, { distance, gems, topSpeed });
     return NextResponse.json({ ok: true });
   }
 
