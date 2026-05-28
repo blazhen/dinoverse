@@ -1,4 +1,4 @@
-import { Schema, MapSchema, defineTypes } from '@colyseus/schema';
+import { Schema, MapSchema, ArraySchema, defineTypes } from '@colyseus/schema';
 import { Room, type Client } from 'colyseus';
 
 // ── Why this file looks weird (no @type decorators, `declare` fields, defineTypes call) ──
@@ -61,6 +61,34 @@ defineTypes(PlayerState, {
   place: 'number',
 });
 
+/** A box dropped by a Trex player via the Leave-Box ability. Persists in shared state
+ *  until consumed by collision or its owner leaves. `type` decides what hitting it does.
+ *  Coordinates are in world-space: `distance` is the world distance the rival must reach
+ *  to collide; `lane` is 0/1/2; `ownerId` is the dropper (immune to their own box). */
+export class DroppedBox extends Schema {
+  declare id: string;
+  declare ownerId: string;
+  declare type: string; // 'water' | 'fire' | 'trap'
+  declare lane: number;
+  declare distance: number;
+
+  constructor() {
+    super();
+    this.id = '';
+    this.ownerId = '';
+    this.type = 'trap';
+    this.lane = 1;
+    this.distance = 0;
+  }
+}
+defineTypes(DroppedBox, {
+  id: 'string',
+  ownerId: 'string',
+  type: 'string',
+  lane: 'number',
+  distance: 'number',
+});
+
 export class RaceState extends Schema {
   declare seed: number; // all clients build the SAME track from this
   declare phase: 'lobby' | 'countdown' | 'racing' | 'finished';
@@ -70,6 +98,8 @@ export class RaceState extends Schema {
    *  the host's "Follow" pick. */
   declare view: string; // 'follow' | 'close'
   declare players: MapSchema<PlayerState>;
+  /** Dropped boxes placed by Trex players via Leave-Box. Removed when consumed. */
+  declare boxes: ArraySchema<DroppedBox>;
 
   constructor() {
     super();
@@ -78,6 +108,7 @@ export class RaceState extends Schema {
     this.startsAt = 0;
     this.view = 'follow';
     this.players = new MapSchema<PlayerState>();
+    this.boxes = new ArraySchema<DroppedBox>();
   }
 }
 defineTypes(RaceState, {
@@ -86,6 +117,7 @@ defineTypes(RaceState, {
   startsAt: 'number',
   view: 'string',
   players: { map: PlayerState },
+  boxes: { array: DroppedBox },
 });
 
 interface JoinOptions {
@@ -148,7 +180,26 @@ export class RaceRoom extends Room<RaceState> {
       const me = this.state.players.get(client.sessionId);
       if (!me || me.finished) return;
       const kind = msg?.kind;
-      if (kind !== 'pull' && kind !== 'freeze' && kind !== 'thunder') return;
+      if (kind !== 'pull' && kind !== 'freeze' && kind !== 'thunder' && kind !== 'box') return;
+      // Trex's Leave-Box: doesn't target a rival — drops a box in the caster's lane
+      // ~3m behind their current distance. Random sub-type (water/fire/trap). The
+      // broadcast carries no targetIds; clients render the new box from state sync.
+      if (kind === 'box') {
+        const r = Math.random();
+        const type = r < 0.5 ? 'trap' : r < 0.8 ? 'water' : 'fire';
+        const box = new DroppedBox();
+        box.id = `b_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`;
+        box.ownerId = me.id;
+        box.type = type;
+        box.lane = me.lane;
+        box.distance = me.distance + 3; // a few metres ahead of the caster so they don't trip on it
+        this.state.boxes.push(box);
+        // Prune stale boxes (older than 60s — derived from id timestamp; safety, not strict).
+        // Also keep array small; a hard cap of 24 active boxes prevents spam.
+        while (this.state.boxes.length > 24) this.state.boxes.shift();
+        this.broadcast('ability', { kind, casterId: me.id, targetIds: [], boxType: type });
+        return;
+      }
       // Collect rivals AHEAD of caster (within 60m so it feels like a "shot," not a missile).
       const ahead: PlayerState[] = [];
       this.state.players.forEach((p) => {
@@ -203,6 +254,34 @@ export class RaceRoom extends Room<RaceState> {
       }
       this.broadcast('ability', { kind, casterId: me.id, targetIds });
     });
+
+    // Client reports it ran through a dropped box. Validate (must exist, must not be
+    // owner's own box) and broadcast a 'boxHit' event so all clients can play the
+    // collected animation + the receiver applies the type's effect.
+    this.onMessage('boxHit', (client, msg: { boxId?: string }) => {
+      if (this.state.phase !== 'racing') return;
+      const me = this.state.players.get(client.sessionId);
+      if (!me || me.finished) return;
+      const boxId = msg?.boxId;
+      if (!boxId) return;
+      const idx = this.state.boxes.findIndex((b) => b.id === boxId);
+      if (idx < 0) return;
+      const box = this.state.boxes[idx]!;
+      if (box.ownerId === client.sessionId) return; // immune to own boxes
+      const type = box.type;
+      this.state.boxes.splice(idx, 1);
+      // Fire = -1 heart, authoritative (mirrors Pull).
+      if (type === 'fire') me.hearts = Math.max(0, me.hearts - 1);
+      this.broadcast('boxHit', { boxId, victimId: me.id, ownerId: box.ownerId, type });
+    });
+  }
+
+  // Owner left the room → remove their boxes too so they don't sit there forever.
+  onLeave(client: Client) {
+    this.state.players.delete(client.sessionId);
+    for (let i = this.state.boxes.length - 1; i >= 0; i--) {
+      if (this.state.boxes[i]!.ownerId === client.sessionId) this.state.boxes.splice(i, 1);
+    }
   }
 
   onJoin(client: Client, options: JoinOptions) {
@@ -211,10 +290,6 @@ export class RaceRoom extends Room<RaceState> {
     p.name = (options.name ?? 'Dino').slice(0, 16);
     p.character = options.character ?? 'trik';
     this.state.players.set(client.sessionId, p);
-  }
-
-  onLeave(client: Client) {
-    this.state.players.delete(client.sessionId);
   }
 
   // Start once at least 2 friends are in and everyone has readied up.

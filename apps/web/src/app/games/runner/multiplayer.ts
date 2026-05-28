@@ -32,17 +32,35 @@ export interface MpState {
   startsAt: number; // epoch ms the race officially begins (after a 3s countdown)
   view: 'follow' | 'close'; // camera view chosen by the room host — everyone races in this
   players: MpPlayer[];
+  boxes: MpDroppedBox[]; // Trex Leave-Box items currently on the track
   myId: string;
 }
 
 /** Server-relayed PvP ability event. The server resolves targets (nearest-ahead
  *  weighted-random, or AoE for thunder) and broadcasts to everyone so each client can
  *  filter for self/caster and play the appropriate visual + effect. */
-export type AbilityKind = 'pull' | 'freeze' | 'thunder';
+export type AbilityKind = 'pull' | 'freeze' | 'thunder' | 'box';
+export type BoxType = 'water' | 'fire' | 'trap';
 export interface AbilityEvent {
   kind: AbilityKind;
   casterId: string;
-  targetIds: string[]; // empty if the cast fizzled (no rivals in front of caster)
+  targetIds: string[]; // empty for 'box' (handled via boxHit) or fizzled casts
+  boxType?: BoxType; // only set when kind === 'box'
+}
+/** Broadcast when ANY player collides with a dropped box. Drives the receiver effect
+ *  on the victim's client + the kill-feed entry on every client. */
+export interface BoxHitEvent {
+  boxId: string;
+  victimId: string;
+  ownerId: string;
+  type: BoxType;
+}
+export interface MpDroppedBox {
+  id: string;
+  ownerId: string;
+  type: BoxType;
+  lane: number;
+  distance: number;
 }
 
 export interface MpCallbacks {
@@ -52,6 +70,8 @@ export interface MpCallbacks {
   /** Broadcast from the server whenever any player fires an ability. Receivers filter
    *  on `casterId === myId` (cast visual) and `targetIds.includes(myId)` (apply effect). */
   onAbility?: (e: AbilityEvent) => void;
+  /** Broadcast when any player collides with a dropped Trex box. */
+  onBoxHit?: (e: BoxHitEvent) => void;
 }
 
 // Server-schema shape — we don't import @colyseus/schema types directly to keep the runtime
@@ -68,12 +88,20 @@ interface RemotePlayer {
   finished: boolean;
   place: number;
 }
+interface RemoteBox {
+  id: string;
+  ownerId: string;
+  type: string;
+  lane: number;
+  distance: number;
+}
 interface RemoteState {
   seed: number;
   phase: MpPhase;
   startsAt: number;
   view: string;
   players: { forEach(cb: (p: RemotePlayer) => void): void };
+  boxes: { forEach(cb: (b: RemoteBox) => void): void };
 }
 
 export function defaultServerUrl(): string {
@@ -129,7 +157,12 @@ function snapshot(state: RemoteState, myId: string): MpState {
     });
   });
   const view = state.view === 'close' ? 'close' : 'follow';
-  return { seed: state.seed, phase: state.phase, startsAt: state.startsAt, view, players, myId };
+  const boxes: MpDroppedBox[] = [];
+  state.boxes?.forEach?.((b) => {
+    const t: BoxType = b.type === 'water' || b.type === 'fire' || b.type === 'trap' ? b.type : 'trap';
+    boxes.push({ id: b.id, ownerId: b.ownerId, type: t, lane: b.lane, distance: b.distance });
+  });
+  return { seed: state.seed, phase: state.phase, startsAt: state.startsAt, view, players, boxes, myId };
 }
 
 export class Multiplayer {
@@ -151,11 +184,16 @@ export class Multiplayer {
     room.onLeave(() => cb.onLeave?.());
     room.onError((code, msg) => cb.onError?.(msg ?? `room error ${code}`));
     room.onMessage('ability', (e: AbilityEvent) => cb.onAbility?.(e));
+    room.onMessage('boxHit', (e: BoxHitEvent) => cb.onBoxHit?.(e));
   }
 
   /** Fire a PvP ability. The server picks the target(s) and relays via `onAbility`. */
   ability(kind: AbilityKind) {
     this.room?.send('ability', { kind });
+  }
+  /** Notify the server we ran through a dropped box. Server validates + broadcasts. */
+  boxHit(boxId: string) {
+    this.room?.send('boxHit', { boxId });
   }
 
   ready(r: boolean) {

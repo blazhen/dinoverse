@@ -47,6 +47,9 @@ export interface RunnerCallbacks {
   /** distance (m), gems, run duration in seconds (for "longest run" history) */
   onGameOver: (distance: number, gems: number, durationSec: number) => void;
   onRune?: (rune: string) => void; // fired when a breakable is smashed (for the reward popup)
+  /** MP only — fired when our player collides with a dropped Trex box. The canvas tells
+   *  the server (boxHit) so the server can broadcast removal + authoritative effects. */
+  onDroppedBoxCollision?: (boxId: string, type: 'water' | 'fire' | 'trap') => void;
 }
 export type RunnerView = 'follow' | 'close';
 export interface RunnerOptions {
@@ -71,6 +74,16 @@ export interface RunnerOpponent {
   y: number;
   finished?: boolean;
 }
+
+/** A Trex-dropped box in shared MP state. The canvas hands the latest list in via
+ *  `setDroppedBoxes` each frame so the runner renders them at the right local-z. */
+export interface RunnerDroppedBox {
+  id: string;
+  ownerId: string;
+  type: 'water' | 'fire' | 'trap';
+  lane: number;
+  distance: number;
+}
 export interface RunnerHandle {
   destroy: () => void;
   restart: () => void;
@@ -91,6 +104,17 @@ export interface RunnerHandle {
   applyFreeze: (durationMs: number) => void;
   applyStun: (durationMs: number) => void;
   applyHit: () => void;
+  /** MP visual: render a transient beam between two players (ids = 'self' for the local
+   *  player; otherwise opponent ids from the latest setOpponents call). */
+  showAbilityBeam: (from: string | 'self', to: string | 'self', color: number) => void;
+  /** MP: tell the runner our own session id so it knows which Leave-Boxes are ours
+   *  (we're immune to our own boxes). */
+  setSelfId: (id: string) => void;
+  /** MP: latest snapshot of Trex-dropped boxes in the room. */
+  setDroppedBoxes: (boxes: RunnerDroppedBox[]) => void;
+  /** MP: a dropped box was consumed by SOMEONE (we got the broadcast). Remove the
+   *  local mesh + prevent any in-flight local collision from re-firing. */
+  forgetDroppedBox: (id: string) => void;
   setPaused: (b: boolean) => void;
   /** Multiplayer: hand in the latest opponent snapshots. The runner renders each as a
    *  ghost dino positioned by (my_distance − their_distance) on the z axis. */
@@ -288,6 +312,35 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   // Spawns more rarely than gold so a cast feels earned. Doesn't grant a rune; the ability
   // IS the reward.
   const abilityBoxes: { mesh: THREE.Mesh; lane: number }[] = [];
+  // Ability beams: short-lived line segments rendered between caster and target during
+  // a cast. Each entry stores its world endpoints + lifetime; the loop fades opacity.
+  interface AbilityBeam { line: THREE.Line; mat: THREE.LineBasicMaterial; life: number; max: number }
+  const abilityBeams: AbilityBeam[] = [];
+  // Trex Leave-Box. The canvas pushes the latest snapshot in `setDroppedBoxes` each frame.
+  // We keep a local Map<id, mesh> so we can ADD new ones / REMOVE consumed ones lazily
+  // without re-creating everything per frame. Local "tripped" set avoids re-firing
+  // a boxHit on the same id while server-sync is still propagating the removal.
+  // `selfId` is our own MP id (set via `setSelfId`) — boxes we dropped don't collide on us.
+  let droppedBoxesLatest: RunnerDroppedBox[] = [];
+  let selfId = '';
+  const droppedBoxMeshes = new Map<string, { mesh: THREE.Mesh; type: 'water' | 'fire' | 'trap' }>();
+  const trippedBoxIds = new Set<string>();
+  const dropBoxGeo = new THREE.BoxGeometry(1.4, 1.0, 1.0);
+  const dropBoxMats = {
+    water: new THREE.MeshStandardMaterial({ color: 0x38bdf8, emissive: 0x0284c7, emissiveIntensity: 0.4, transparent: true, opacity: 0.75 }),
+    fire: new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0xb91c1c, emissiveIntensity: 0.5 }),
+    trap: new THREE.MeshStandardMaterial({ color: 0xa855f7, emissive: 0x7e22ce, emissiveIntensity: 0.5 }),
+  };
+  // Called by the canvas when a server boxHit broadcast lands → forget the local mesh
+  // immediately so the next frame doesn't re-fire collision before state sync.
+  const forgetBox = (id: string) => {
+    trippedBoxIds.add(id);
+    const m = droppedBoxMeshes.get(id);
+    if (m) {
+      scene.remove(m.mesh);
+      droppedBoxMeshes.delete(id);
+    }
+  };
   // Multiplayer ghost dinos — one entry per remote racer, keyed by their server-side id.
   // `freshlySpawned` flips false after the first frame so we snap to position on creation
   // but interpolate every frame after, eliminating the 10Hz network-update jitter.
@@ -453,17 +506,39 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       scene.add(mesh, shadow);
       speedups.push({ mesh, shadow, lane, amount });
     }
-    // Rare Ability Box — 1-tap smash → full ⚡ charge. ~4% per row so they're a treat.
-    if (rng() < 0.04) {
-      const lane = Math.floor(rng() * 3);
-      const mesh = new THREE.Mesh(abilityBoxGeo, abilityBoxMat);
-      mesh.position.set(LANES[lane]!, 0.7, z);
-      const icon = new THREE.Sprite(abilityBoxIconMat);
-      icon.scale.set(0.7, 0.7, 0.7);
-      icon.position.set(0, 1.0, 0);
-      mesh.add(icon);
-      scene.add(mesh);
-      abilityBoxes.push({ mesh, lane });
+    // Rare Ability Box — 1-tap smash → full ⚡ charge. ~6% per row so they're a treat.
+    // Picks a lane that has NO obstacle/breakable/crate at the same z (within 1m) so it
+    // never spawns visually inside another box. If every lane is taken in this row, skip.
+    if (rng() < 0.06) {
+      const occupied = new Set<number>();
+      for (const o of obstacles) {
+        if (Math.abs(o.mesh.position.z - z) < 1.0) occupied.add(o.lane);
+      }
+      for (const b of breakables) {
+        if (Math.abs(b.mesh.position.z - z) < 1.0) {
+          if (b.shape === 'crate') {
+            // crate is 2-lane wide; mark both
+            const cxLane = b.mesh.position.x < -1 ? 0 : b.mesh.position.x > 1 ? 2 : 1;
+            occupied.add(cxLane);
+            occupied.add(cxLane + (b.mesh.position.x < 0 ? 1 : -1));
+          } else {
+            const bxLane = Math.round((b.mesh.position.x + 2.2) / 2.2);
+            occupied.add(bxLane);
+          }
+        }
+      }
+      const free = [0, 1, 2].filter((l) => !occupied.has(l));
+      if (free.length > 0) {
+        const lane = free[Math.floor(rng() * free.length)]!;
+        const mesh = new THREE.Mesh(abilityBoxGeo, abilityBoxMat);
+        mesh.position.set(LANES[lane]!, 0.7, z);
+        const icon = new THREE.Sprite(abilityBoxIconMat);
+        icon.scale.set(0.7, 0.7, 0.7);
+        icon.position.set(0, 1.0, 0);
+        mesh.add(icon);
+        scene.add(mesh);
+        abilityBoxes.push({ mesh, lane });
+      }
     }
   }
 
@@ -943,6 +1018,63 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         }
       }
     }
+    // ── Trex Leave-Box (MP only) ─────────────────────────────────────────
+    // Sync mesh set to the latest server snapshot. Position them at (their_distance −
+    // mine) → -z in local space. Local owner is immune; everyone else who runs into
+    // a box (within ~1.5m z + correct lane) fires onDroppedBoxCollision so the canvas
+    // can tell the server (boxHit) → server validates + broadcasts removal.
+    if (droppedBoxesLatest.length || droppedBoxMeshes.size) {
+      const seen = new Set<string>();
+      for (const b of droppedBoxesLatest) {
+        seen.add(b.id);
+        if (trippedBoxIds.has(b.id)) continue; // already collided this session
+        let entry = droppedBoxMeshes.get(b.id);
+        if (!entry) {
+          const mat = dropBoxMats[b.type] ?? dropBoxMats.trap;
+          const mesh = new THREE.Mesh(dropBoxGeo, mat);
+          scene.add(mesh);
+          entry = { mesh, type: b.type };
+          droppedBoxMeshes.set(b.id, entry);
+        }
+        const lane = Math.min(2, Math.max(0, b.lane | 0));
+        const zRel = -(b.distance - distance);
+        entry.mesh.position.set(LANES[lane]!, 0.6, zRel);
+        entry.mesh.rotation.y += dt * 0.8;
+        // Cull off-screen behind us.
+        if (zRel > 12 || zRel < -200) {
+          scene.remove(entry.mesh);
+          droppedBoxMeshes.delete(b.id);
+          continue;
+        }
+        // Collision: own player crosses the box's lane within a small z window.
+        const isMine = selfId !== '' && selfId === b.ownerId;
+        const sameLane = laneIndex === lane;
+        if (!isMine && sameLane && Math.abs(zRel) < 1.0 + dz) {
+          trippedBoxIds.add(b.id);
+          cb.onDroppedBoxCollision?.(b.id, b.type);
+          // Local immediate effect mirror so the player feels it before server-roundtrip:
+          // server still has the final say + broadcasts to others.
+          if (b.type === 'trap') {
+            frozenUntilLocal = t + 1.5;
+          } else if (b.type === 'water') {
+            stunSpeedCapUntilLocal = t + 2;
+            speed = Math.min(speed, MIN_SPEED + 1);
+          } else if (b.type === 'fire') {
+            hit(); // -1 heart; server also decrements authoritatively
+          }
+          scene.remove(entry.mesh);
+          droppedBoxMeshes.delete(b.id);
+        }
+      }
+      // Remove meshes whose box vanished server-side (consumed by someone else).
+      for (const [id, entry] of droppedBoxMeshes) {
+        if (!seen.has(id)) {
+          scene.remove(entry.mesh);
+          droppedBoxMeshes.delete(id);
+        }
+      }
+    }
+
     // ── Ability boxes ────────────────────────────────────────────────────
     // 1-tap break: any queued smash (pendingSmash) that hits an aligned ability box
     // in front of the player grants a full ⚡ charge. Boxes that scroll past
@@ -1039,6 +1171,19 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       p.mesh.position.y += p.vy * dt;
       p.mesh.position.z += p.vz * dt + dz; // drift back with the world
       p.mesh.scale.setScalar(0.4 + (p.life / p.max) * 0.8);
+    }
+    // Ability beams: fade opacity over their lifetime, then dispose.
+    for (let i = abilityBeams.length - 1; i >= 0; i--) {
+      const b = abilityBeams[i]!;
+      b.life -= dt;
+      if (b.life <= 0) {
+        scene.remove(b.line);
+        b.line.geometry.dispose();
+        b.mat.dispose();
+        abilityBeams.splice(i, 1);
+        continue;
+      }
+      b.mat.opacity = 0.9 * (b.life / b.max);
     }
 
     if (t - lastHud > 0.12) {
@@ -1171,6 +1316,28 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     emit();
   };
 
+  /** Render a short-lived line between two players for an ability cast. `fromOpId` /
+   *  `toOpId` use 'self' for the local player or an opponent id. The runner converts
+   *  to local 3D coordinates (lane.x, dino head ≈ y=1, distance-relative z). */
+  const showAbilityBeam = (fromOpId: string | 'self', toOpId: string | 'self', color: number) => {
+    function pos(id: string | 'self'): THREE.Vector3 | null {
+      if (id === 'self') return new THREE.Vector3(player.position.x, 1, player.position.z);
+      const op = opponentsLatest.find((o) => o.id === id);
+      if (!op) return null;
+      const lane = Math.min(2, Math.max(0, op.lane | 0));
+      const dz2 = op.distance - distance;
+      return new THREE.Vector3(LANES[lane]!, op.y + 1, -dz2);
+    }
+    const a = pos(fromOpId);
+    const b = pos(toOpId);
+    if (!a || !b) return;
+    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9, linewidth: 2 });
+    const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
+    const line = new THREE.Line(geo, mat);
+    scene.add(line);
+    abilityBeams.push({ line, mat, life: 0.4, max: 0.4 });
+  };
+
   const onKey = (e: KeyboardEvent) => {
     if (paused) return; // 'P' (pause/resume) is handled by the page, not here
     if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') moveLeft();
@@ -1209,6 +1376,12 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         g.nameMat.dispose();
       }
       ghosts.clear();
+      for (const b of abilityBeams) {
+        scene.remove(b.line);
+        b.line.geometry.dispose();
+        b.mat.dispose();
+      }
+      abilityBeams.length = 0;
       dino.dispose();
       magnetIconMat.map?.dispose();
       magnetIconMat.dispose();
@@ -1230,6 +1403,12 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       abilityBoxMat.dispose();
       abilityBoxIconMat.map?.dispose();
       abilityBoxIconMat.dispose();
+      for (const entry of droppedBoxMeshes.values()) scene.remove(entry.mesh);
+      droppedBoxMeshes.clear();
+      dropBoxGeo.dispose();
+      dropBoxMats.water.dispose();
+      dropBoxMats.fire.dispose();
+      dropBoxMats.trap.dispose();
       particleGeo.dispose();
       coinPMat.dispose();
       dustPMat.dispose();
@@ -1253,6 +1432,14 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     applyFreeze,
     applyStun,
     applyHit,
+    showAbilityBeam,
+    setSelfId(id: string) {
+      selfId = id;
+    },
+    setDroppedBoxes(boxes: RunnerDroppedBox[]) {
+      droppedBoxesLatest = boxes;
+    },
+    forgetDroppedBox: forgetBox,
     setPaused(b: boolean) {
       paused = b;
     },

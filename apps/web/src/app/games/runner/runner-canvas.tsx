@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { DinoType } from './dino-character';
-import { defaultServerUrl, makeRoomCode, Multiplayer, type AbilityEvent, type AbilityKind, type MpPlayer, type MpState } from './multiplayer';
+import { defaultServerUrl, makeRoomCode, Multiplayer, type AbilityEvent, type AbilityKind, type BoxHitEvent, type MpPlayer, type MpState } from './multiplayer';
 import { RunnerAudio } from './runner-audio';
 import type { RunnerHandle, RunnerOpponent, RunnerOptions, RunnerStats, RunnerView } from './runner';
 
@@ -61,9 +61,10 @@ function lsDino(): DinoType {
 const EMPTY_STATS: RunnerStats = { distance: 0, gems: 0, hearts: 3, shield: false, magnet: false, speed: 0, breakReady: true, combo: 1, lane: 1, y: 0, abilityCharge: 0 };
 
 const DINOS: { id: DinoType; label: string }[] = [
-  { id: 'trik', label: '⚡ Trik' },
-  { id: 'stego', label: '🛡️ Stego' },
-  { id: 'brachio', label: '🔭 Brachio' },
+  { id: 'trik', label: '🕸️ Trik' },
+  { id: 'stego', label: '❄️ Stego' },
+  { id: 'brachio', label: '⚡ Brachio' },
+  { id: 'trex', label: '📦 Trex' },
 ];
 
 export function RunnerCanvas() {
@@ -108,6 +109,27 @@ export function RunnerCanvas() {
   // PvP receiver overlay — set when a rival hits us; cleared automatically when expired.
   // The runner.ts handles input-blocking; this is purely a visual cue on OUR screen.
   const [hitOverlay, setHitOverlay] = useState<{ kind: AbilityKind; until: number } | null>(null);
+  // Per-caster grace window — after a hit from caster X lands on us, ignore another hit
+  // from X for HIT_GRACE_MS. Prevents the cheap "spam Q to perma-freeze the same victim".
+  // Tracks epoch-ms when we're vulnerable again, keyed by casterId.
+  const HIT_GRACE_MS = 500;
+  const hitGraceRef = useRef<Map<string, number>>(new Map());
+  // Kill-feed: rolling log of who cast what on whom. Max 4 visible, each fades after 3s.
+  // Structured (not HTML) so player names render through React's normal escaping — no XSS.
+  interface FeedEntry {
+    id: number;
+    until: number;
+    kind: AbilityKind;
+    /** Optional verb override (used by box-hit entries to show the specific type
+     *  — burned/soaked/trapped — instead of the default per-kind verb). */
+    verb?: string;
+    casterName: string;
+    casterIsMe: boolean;
+    targets: { name: string; isMe: boolean }[];
+    fizzled: boolean; // caster fired but nobody in range
+  }
+  const [feedEvents, setFeedEvents] = useState<FeedEntry[]>([]);
+  const feedIdRef = useRef(0);
   const runeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chargeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -147,8 +169,17 @@ export function RunnerCanvas() {
   function abilityKindForDino(d: DinoType): AbilityKind {
     if (d === 'stego') return 'freeze';
     if (d === 'brachio') return 'thunder';
-    return 'pull'; // trik / trex / default
+    if (d === 'trex') return 'box';
+    return 'pull'; // trik / default
   }
+  // Glyph shown on the ⚡ button so each dino's signature ability reads at a glance.
+  function abilityIconForDino(d: DinoType): string {
+    if (d === 'stego') return '❄️';
+    if (d === 'brachio') return '⚡';
+    if (d === 'trex') return '📦';
+    return '🕸️'; // trik / default
+  }
+  const abilityIcon = abilityIconForDino(selectedDino);
   function fireAbility() {
     if (stats.abilityCharge < 1) {
       showCharging();
@@ -221,6 +252,7 @@ export function RunnerCanvas() {
           setMpError('Disconnected from room.');
         },
         onAbility: handleAbilityEvent,
+        onBoxHit: handleBoxHitEvent,
       });
     } catch (e) {
       setMpError((e as Error).message || 'Failed to connect to server.');
@@ -281,35 +313,98 @@ export function RunnerCanvas() {
     mpRef.current?.ready(!me?.ready);
   }
 
-  // Receive a PvP ability broadcast from the server. Three things might happen:
-  //  1. We're the CASTER → flash a cast-confirm rune (e.g. "❄️ FROZE!").
-  //  2. We're a TARGET → apply the effect to the local runner + show the receiver overlay.
-  //  3. Cast fizzled (no targets) → only the caster sees a "no target" hint.
+  // Receive a PvP ability broadcast from the server. Four things might happen:
+  //  1. Push to the kill-feed (everyone sees who hit whom).
+  //  2. CASTER → flash a cast-confirm rune.
+  //  3. TARGET (with grace check) → apply the effect locally + show the receiver overlay.
+  //  4. Cast fizzled (no targets) → caster gets a "no target" hint.
   function handleAbilityEvent(e: AbilityEvent) {
     const myId = mpStateRef.current?.myId;
     if (!myId) return;
+    const state = mpStateRef.current;
+    const casterName = state?.players.find((p) => p.id === e.casterId)?.name ?? 'someone';
+    const casterIsMe = e.casterId === myId;
+    // 1. Kill-feed — all clients see who cast what on whom.
+    if (e.targetIds.length === 0) {
+      // Only the caster cares about a fizzle.
+      if (casterIsMe) pushFeed({ kind: e.kind, casterName, casterIsMe: true, targets: [], fizzled: true });
+    } else {
+      const targets = e.targetIds.map((tid) => ({
+        name: state?.players.find((p) => p.id === tid)?.name ?? 'someone',
+        isMe: tid === myId,
+      }));
+      pushFeed({ kind: e.kind, casterName, casterIsMe, targets, fizzled: false });
+    }
+    // 2. Visual beam(s) — colour-coded by ability kind. From caster → each target.
+    //    'self' resolves on the runner side via the locally-known dino position.
+    const beamColor = e.kind === 'freeze' ? 0x60a5fa : e.kind === 'pull' ? 0xef4444 : e.kind === 'thunder' ? 0xfde047 : 0xa78bfa;
+    for (const tid of e.targetIds) {
+      const from: string | 'self' = e.casterId === myId ? 'self' : e.casterId;
+      const to: string | 'self' = tid === myId ? 'self' : tid;
+      handleRef.current?.showAbilityBeam(from, to, beamColor);
+    }
+    // 3. Caster confirmation
     if (e.casterId === myId) {
-      // We cast it. Show what happened.
       if (e.targetIds.length === 0) {
         showRune('🌫️ no target');
       } else {
-        const label = e.kind === 'freeze' ? '❄️ FROZE!' : e.kind === 'pull' ? '🕸️ PULLED!' : '⚡ THUNDER!';
+        const label = e.kind === 'freeze' ? '❄️ FROZE!' : e.kind === 'pull' ? '🕸️ PULLED!' : e.kind === 'thunder' ? '⚡ THUNDER!' : '📦 DROPPED!';
         showRune(label);
       }
       return;
     }
     if (!e.targetIds.includes(myId)) return; // not for us
-    // We're a target — apply the effect to our local runner + show the overlay.
+    // 4. Target — grace check prevents spam-locking the same victim by the same caster.
+    const now = Date.now();
+    const graceUntil = hitGraceRef.current.get(e.casterId) ?? 0;
+    if (now < graceUntil) return;
+    hitGraceRef.current.set(e.casterId, now + HIT_GRACE_MS);
+    // Apply effect + overlay
     if (e.kind === 'freeze') {
       handleRef.current?.applyFreeze(2000);
-      setHitOverlay({ kind: 'freeze', until: Date.now() + 2000 });
+      setHitOverlay({ kind: 'freeze', until: now + 2000 });
     } else if (e.kind === 'pull') {
-      handleRef.current?.applyHit(); // -1 heart (same code path as a box collision)
-      setHitOverlay({ kind: 'pull', until: Date.now() + 1000 });
+      handleRef.current?.applyHit();
+      setHitOverlay({ kind: 'pull', until: now + 1000 });
     } else if (e.kind === 'thunder') {
       handleRef.current?.applyStun(1500);
-      setHitOverlay({ kind: 'thunder', until: Date.now() + 1500 });
+      setHitOverlay({ kind: 'thunder', until: now + 1500 });
     }
+  }
+  function abilityVerb(kind: AbilityKind): string {
+    if (kind === 'freeze') return '❄️ froze';
+    if (kind === 'pull') return '🕸️ pulled';
+    if (kind === 'thunder') return '⚡ zapped';
+    return '📦 trapped';
+  }
+  // A Trex Leave-Box was consumed (by anyone). Tell the runner to drop its local mesh
+  // so the box vanishes consistently across all clients + push the kill-feed entry.
+  function handleBoxHitEvent(e: BoxHitEvent) {
+    handleRef.current?.forgetDroppedBox(e.boxId);
+    const state = mpStateRef.current;
+    if (!state) return;
+    const ownerName = state.players.find((p) => p.id === e.ownerId)?.name ?? 'someone';
+    const victimName = state.players.find((p) => p.id === e.victimId)?.name ?? 'someone';
+    const ownerIsMe = e.ownerId === state.myId;
+    const victimIsMe = e.victimId === state.myId;
+    const verb = e.type === 'fire' ? '🔥 burned' : e.type === 'water' ? '💧 soaked' : '📦 trapped';
+    pushFeed({
+      kind: 'box',
+      verb,
+      casterName: ownerName,
+      casterIsMe: ownerIsMe,
+      targets: [{ name: victimName, isMe: victimIsMe }],
+      fizzled: false,
+    });
+  }
+
+  function pushFeed(partial: Omit<FeedEntry, 'id' | 'until'>) {
+    const id = ++feedIdRef.current;
+    const until = Date.now() + 3000;
+    setFeedEvents((prev) => [{ id, until, ...partial }, ...prev].slice(0, 4));
+    window.setTimeout(() => {
+      setFeedEvents((prev) => prev.filter((f) => f.id !== id));
+    }, 3100);
   }
   // Auto-clear the receiver overlay when its window passes.
   useEffect(() => {
@@ -339,6 +434,7 @@ export function RunnerCanvas() {
         finished: p.finished,
       }));
     handleRef.current.setOpponents(ops);
+    handleRef.current.setDroppedBoxes(mpState.boxes);
   }, [mpState]);
 
   // Phase transitions:
@@ -712,6 +808,11 @@ export function RunnerCanvas() {
             onGameOver(distance, gems, durationSec);
           },
           onRune: showRune,
+          // Local collision with a dropped Trex box → tell the server (boxHit). Server
+          // validates + broadcasts the consumption to everyone.
+          onDroppedBoxCollision: (boxId) => {
+            mpRef.current?.boxHit(boxId);
+          },
         },
         opts,
       );
@@ -724,11 +825,15 @@ export function RunnerCanvas() {
       setStarted(false);
       return;
     }
-    // Seed in initial opponents (handler in the mpState effect will keep updating after this).
+    // Tell the runner our id (used for Leave-Box owner-immunity).
+    handleRef.current.setSelfId(state.myId);
+    // Seed in initial opponents + dropped boxes (handler in the mpState effect will keep
+    // updating after this).
     const ops: RunnerOpponent[] = state.players
       .filter((p) => p.id !== state.myId)
       .map((p) => ({ id: p.id, name: p.name, character: p.character, distance: p.distance, lane: p.lane, y: p.y, finished: p.finished }));
     handleRef.current.setOpponents(ops);
+    handleRef.current.setDroppedBoxes(state.boxes);
     mpRef.current?.startPosLoop(() => ({
       distance: mpStatsRef.current.distance,
       lane: mpStatsRef.current.lane,
@@ -1171,6 +1276,32 @@ export function RunnerCanvas() {
         </div>
       )}
 
+      {/* PvP kill-feed — most-recent at the top, fades after 3s. Sits just under the
+          leaderboard so the player can see who's casting what at a glance. Names render
+          through React (escaped) — no XSS even with a hostile player name. */}
+      {playing && mpScreen === 'race' && feedEvents.length > 0 && (
+        <div className="pointer-events-none absolute right-3 top-[12rem] z-10 flex flex-col gap-1 text-xs font-semibold text-white">
+          {feedEvents.map((f) => (
+            <div key={f.id} className="rounded-md bg-black/55 px-2 py-1 backdrop-blur">
+              <span className={f.casterIsMe ? 'font-black text-amber-200' : ''}>
+                {f.casterIsMe ? 'YOU' : f.casterName}
+              </span>{' '}
+              <span className="text-white/80">{f.verb ?? abilityVerb(f.kind)}</span>{' '}
+              {f.fizzled ? (
+                <span className="italic text-white/50">no target</span>
+              ) : (
+                f.targets.map((t, i) => (
+                  <span key={i}>
+                    {i > 0 && ', '}
+                    <span className={t.isMe ? 'font-black text-red-200' : ''}>{t.isMe ? 'YOU' : t.name}</span>
+                  </span>
+                ))
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* How-to-play overlay (from the menu) — same scroll pattern as the menu. */}
       {showHowTo && !started && (
         <div className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-slate-900/90 text-white" style={scrollShellStyle}>
@@ -1214,7 +1345,7 @@ export function RunnerCanvas() {
             onPointerDown={fireAbility}
             aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
           >
-            ⚡
+            {abilityIcon}
           </button>
           <div className="flex gap-2">
             <button type="button" className={dpadBtn} onPointerDown={() => handleRef.current?.slide()} aria-label="Slide">
@@ -1241,7 +1372,7 @@ export function RunnerCanvas() {
             }}
             aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
           >
-            ⚡
+            {abilityIcon}
           </button>
 
           {/* Idle hint — clears up once player makes a move. */}
