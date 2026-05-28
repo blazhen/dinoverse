@@ -7,6 +7,14 @@
     "types": ["node"],
     "strict": true,
     "noUncheckedIndexedAccess": true,
+    // Colyseus schema's @type() is a legacy TS property decorator that installs a
+    // getter/setter on the prototype. We need class field initializers (e.g.
+    // `players = new MapSchema()`) to FLOW THROUGH that setter so $childType gets
+    // assigned to the map. The ES2022 default `useDefineForClassFields: true` would
+    // use Object.defineProperty and bypass the setter — leaving $childType undefined
+    // and crashing the encoder with "Cannot read properties of undefined
+    // (reading 'Symbol(Symbol.metadata)')". Keep this false for Colyseus schema 3.x.
+    "useDefineForClassFields": false,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "esModuleInterop": true,

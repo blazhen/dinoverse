@@ -110,6 +110,10 @@ export function RunnerCanvas() {
   const [mpState, setMpState] = useState<MpState | null>(null);
   const [mpError, setMpError] = useState<string | null>(null);
   const [mpConnecting, setMpConnecting] = useState(false);
+  // false = host (default — auto-creates a room on Race-with-friends click). true = "I have
+  // a code from a friend" → show a code input + Join button instead.
+  const [mpJoinMode, setMpJoinMode] = useState(false);
+  const [mpCopied, setMpCopied] = useState(false); // "Copied!" toast on the invite-link button
   const mpRef = useRef<Multiplayer | null>(null);
   const mpStateRef = useRef<MpState | null>(null);
   const mpStatsRef = useRef<RunnerStats>(EMPTY_STATS); // latest stats for the pos broadcaster
@@ -136,22 +140,30 @@ export function RunnerCanvas() {
   }
 
   // ── Multiplayer flow ────────────────────────────────────────────────────────
-  // openMultiplayer → user types name + code, hits Connect → connect() resolves and we land
-  // in the lobby. Ready toggle drives the server start. When phase flips to "racing" we
-  // build the canvas with the room's seed, then start the 10Hz position broadcaster.
-  function openMultiplayer() {
+  // openMultiplayer auto-hosts a new room so the user can immediately copy an invite link.
+  // If a `joinCode` is passed (from the ?race=XYZ URL or the "I have a code" form), it
+  // joins that room instead. The lobby UI shows the code + invite link, players list, and
+  // a ready toggle. When server phase flips to "racing" we start the canvas with the seed.
+  function resolveName(): string {
+    if (mpName) return mpName;
+    let stored = '';
+    try {
+      stored = localStorage.getItem('dinoDashName') ?? '';
+    } catch {
+      /* ignore */
+    }
+    const name = stored || `Dino${Math.floor(Math.random() * 90) + 10}`;
+    setMpName(name);
+    return name;
+  }
+  async function openMultiplayer(joinCode?: string) {
     setMpScreen('lobby');
     setMpError(null);
-    if (!mpName) {
-      const stored = (() => {
-        try {
-          return localStorage.getItem('dinoDashName') ?? '';
-        } catch {
-          return '';
-        }
-      })();
-      setMpName(stored || `Dino${Math.floor(Math.random() * 90) + 10}`);
-    }
+    setMpJoinMode(!!joinCode);
+    const code = (joinCode ?? makeRoomCode()).toUpperCase();
+    setMpCode(code);
+    const name = resolveName();
+    await mpConnect(code, name);
   }
   function closeMultiplayer() {
     void mpRef.current?.leave();
@@ -159,17 +171,21 @@ export function RunnerCanvas() {
     setMpState(null);
     setMpError(null);
     setMpConnecting(false);
+    setMpJoinMode(false);
+    setMpCopied(false);
     setMpScreen('menu');
   }
-  async function mpConnect(code: string) {
-    if (mpConnecting || !code || !mpName) return;
+  async function mpConnect(code: string, nameOverride?: string) {
+    if (mpConnecting || !code) return;
+    const name = nameOverride ?? mpName;
+    if (!name) return;
     setMpError(null);
     setMpConnecting(true);
-    lsSet('dinoDashName', mpName);
+    lsSet('dinoDashName', name);
     try {
       const mp = new Multiplayer();
       mpRef.current = mp;
-      await mp.connect(code.toUpperCase(), mpName, selectedDino, {
+      await mp.connect(code.toUpperCase(), name, selectedDino, {
         onState: (s) => setMpState(s),
         onError: (msg) => setMpError(msg),
         onLeave: () => {
@@ -184,13 +200,51 @@ export function RunnerCanvas() {
       setMpConnecting(false);
     }
   }
-  function mpHost() {
-    const code = makeRoomCode();
-    setMpCode(code);
-    void mpConnect(code);
+  // Drop the auto-hosted room and switch the lobby to "type a code" mode.
+  async function switchToJoinMode() {
+    await mpRef.current?.leave();
+    mpRef.current = null;
+    setMpState(null);
+    setMpError(null);
+    setMpJoinMode(true);
+    setMpCode('');
   }
-  function mpJoin() {
-    if (mpCode.length >= 3) void mpConnect(mpCode);
+  // Submit the manually-typed code → connect.
+  async function mpJoinTypedCode() {
+    if (mpCode.length < 3) return;
+    const name = resolveName();
+    await mpConnect(mpCode, name);
+  }
+  // Build a sharable invite URL for the current room code.
+  function inviteUrl(): string {
+    if (typeof window === 'undefined' || !mpCode) return '';
+    return `${window.location.origin}/games/runner?race=${mpCode}`;
+  }
+  async function copyInvite() {
+    const url = inviteUrl();
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setMpCopied(true);
+      setTimeout(() => setMpCopied(false), 1500);
+    } catch {
+      setMpError('Could not copy — long-press the link to copy manually.');
+    }
+  }
+  // navigator.share gets the native iOS / Android share sheet — much better than copy on phone.
+  async function shareInvite() {
+    const url = inviteUrl();
+    if (!url) return;
+    const nav = navigator as Navigator & { share?: (d: ShareData) => Promise<void> };
+    if (typeof nav.share === 'function') {
+      try {
+        await nav.share({ title: 'Dino Dash race', text: `Join my race! Code: ${mpCode}`, url });
+      } catch {
+        /* user cancelled */
+      }
+    } else {
+      void copyInvite();
+    }
   }
   function mpToggleReady() {
     if (!mpState) return;
@@ -301,6 +355,19 @@ export function RunnerCanvas() {
     mq.addEventListener('change', h);
     return () => mq.removeEventListener('change', h);
   }, []);
+
+  // ?race=XYZ URL: someone opened a friend's invite link → auto-join that room. The check
+  // runs once on mount, then we clean the URL so a hot reload / share-back doesn't loop us.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const race = params.get('race');
+    if (!race) return;
+    const code = race.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    if (code.length < 3) return;
+    window.history.replaceState({}, '', window.location.pathname);
+    void openMultiplayer(code);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Track fullscreen state so the button can show the right icon.
   useEffect(() => {
@@ -713,7 +780,7 @@ export function RunnerCanvas() {
 
             <button
               type="button"
-              onClick={openMultiplayer}
+              onClick={() => void openMultiplayer()}
               className="pointer-events-auto rounded-full bg-fuchsia-500 px-8 py-3 text-lg font-black text-white shadow-lg ring-2 ring-white/40 transition hover:bg-fuchsia-400 active:scale-95"
             >
               🏁 Race with friends
@@ -734,20 +801,20 @@ export function RunnerCanvas() {
         </div>
       )}
 
-      {/* Multiplayer lobby — host or join a friends-only room (4-char code), then ready up.
-          The server starts the race when ≥2 players have readied; phase change to "racing"
-          dismisses this overlay and starts the game. */}
+      {/* Multiplayer lobby — auto-hosted on click; the host shares an invite link (or code)
+          and friends arrive via that link. Bottom toggle switches to manual "join with code"
+          for players who got a code via voice/text instead of a clickable link. */}
       {mpScreen === 'lobby' && !started && (
         <div className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-gradient-to-b from-fuchsia-900 to-slate-950 text-white" style={scrollShellStyle}>
           <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-4 px-6 py-6 text-center">
             <div className="text-5xl">🏁</div>
             <h2 className="text-3xl font-black">Race with friends</h2>
 
-            {!mpState && (
+            {/* Manual "I have a code" join form — only shown while NOT connected and the user
+                clicked the toggle below. Otherwise we auto-host (no chooser). */}
+            {mpJoinMode && !mpState && (
               <>
-                <p className="max-w-md text-sm text-white/80">
-                  Pick a name, then <b>Host</b> a room (share the code with friends) or <b>Join</b> a code a friend gave you. Up to 4 players.
-                </p>
+                <p className="max-w-md text-sm text-white/80">Enter the code your friend shared.</p>
                 <div className="flex flex-col gap-2">
                   <label className="text-xs font-semibold uppercase tracking-wide text-white/70">Your name</label>
                   <input
@@ -756,7 +823,6 @@ export function RunnerCanvas() {
                     maxLength={16}
                     onChange={(e) => setMpName(e.target.value.replace(/[^A-Za-z0-9 ._-]/g, ''))}
                     className="pointer-events-auto rounded-xl bg-white/15 px-4 py-2 text-center text-lg font-bold text-white outline-none ring-2 ring-white/30 focus:ring-white/60"
-                    placeholder="DinoFan"
                   />
                 </div>
                 <div className="flex flex-col gap-2">
@@ -765,44 +831,69 @@ export function RunnerCanvas() {
                     type="text"
                     value={mpCode}
                     maxLength={6}
+                    autoFocus
                     onChange={(e) => setMpCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
                     className="pointer-events-auto rounded-xl bg-white/15 px-4 py-2 text-center text-2xl font-black tracking-widest text-white outline-none ring-2 ring-white/30 focus:ring-white/60"
                     placeholder="ABCD"
                   />
                 </div>
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={mpHost}
-                    disabled={mpConnecting || !mpName}
-                    className="pointer-events-auto rounded-full bg-amber-400 px-6 py-3 text-lg font-black text-slate-900 shadow-lg ring-2 ring-white/40 transition hover:bg-amber-300 active:scale-95 disabled:opacity-50"
-                  >
-                    🎲 Host (new code)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={mpJoin}
-                    disabled={mpConnecting || mpCode.length < 3 || !mpName}
-                    className="pointer-events-auto rounded-full bg-emerald-500 px-6 py-3 text-lg font-black text-white shadow-lg ring-2 ring-white/40 transition hover:bg-emerald-400 active:scale-95 disabled:opacity-50"
-                  >
-                    🔑 Join code
-                  </button>
-                </div>
-                {mpConnecting && <p className="text-sm text-white/70">Connecting…</p>}
-                {mpError && (
-                  <p className="max-w-md rounded-xl bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-100 ring-1 ring-red-300/40">
-                    ⚠ {mpError} <span className="block text-xs text-red-200/70">Is the race server running? See ROADMAP / MULTIPLAYER.md.</span>
-                  </p>
-                )}
+                <button
+                  type="button"
+                  onClick={() => void mpJoinTypedCode()}
+                  disabled={mpConnecting || mpCode.length < 3 || !mpName}
+                  className="pointer-events-auto rounded-full bg-emerald-500 px-10 py-3 text-xl font-black text-white shadow-lg ring-2 ring-white/40 transition hover:bg-emerald-400 active:scale-95 disabled:opacity-50"
+                >
+                  🔑 Join race
+                </button>
               </>
             )}
 
+            {mpConnecting && !mpState && <p className="text-sm text-white/70">Connecting…</p>}
+            {mpError && !mpState && (
+              <p className="max-w-md rounded-xl bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-100 ring-1 ring-red-300/40">
+                ⚠ {mpError}
+                <span className="mt-1 block text-xs text-red-200/70">
+                  Check that the race server is reachable (see DEPLOY.md / MULTIPLAYER.md).
+                </span>
+              </p>
+            )}
+
+            {/* Connected — show invite link, players list, ready toggle */}
             {mpState && (
               <>
                 <div className="rounded-2xl bg-white/10 px-6 py-3 ring-2 ring-white/30">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-white/70">Room code · share this</p>
-                  <p className="font-mono text-4xl font-black tracking-widest text-amber-200">{mpCode}</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-white/70">Room code</p>
+                  <p className="font-mono text-5xl font-black tracking-widest text-amber-200">{mpCode}</p>
                 </div>
+
+                <div className="flex w-full max-w-md flex-col gap-2">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-white/70">Invite friends</p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={inviteUrl()}
+                      readOnly
+                      onClick={(e) => (e.currentTarget as HTMLInputElement).select()}
+                      className="pointer-events-auto flex-1 truncate rounded-xl bg-black/30 px-3 py-2 text-left text-xs text-white/90 outline-none ring-1 ring-white/20"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void copyInvite()}
+                      className="pointer-events-auto shrink-0 rounded-xl bg-white/20 px-3 py-2 text-sm font-bold hover:bg-white/30"
+                    >
+                      {mpCopied ? '✓ Copied' : '📋 Copy'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void shareInvite()}
+                      className="pointer-events-auto shrink-0 rounded-xl bg-white/20 px-3 py-2 text-sm font-bold hover:bg-white/30"
+                    >
+                      📤 Share
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-white/50">Or read them the code: <b className="font-mono">{mpCode}</b> (they tap "I have a code" below).</p>
+                </div>
+
                 <div className="w-full max-w-md">
                   <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-white/70">Players ({mpState.players.length}/4)</p>
                   <ul className="flex flex-col gap-1.5">
@@ -823,6 +914,7 @@ export function RunnerCanvas() {
                     ))}
                   </ul>
                 </div>
+
                 {mpState.phase === 'countdown' && (
                   <p className="text-2xl font-black text-amber-200">
                     Starting in {Math.max(0, Math.ceil((mpState.startsAt - Date.now()) / 1000))}…
@@ -841,17 +933,29 @@ export function RunnerCanvas() {
                     {mpState.players.find((p) => p.id === mpState.myId)?.ready ? '✕ Not ready' : "✓ I'm ready!"}
                   </button>
                 )}
-                <p className="text-xs text-white/60">Server starts when 2+ players are ready.</p>
+                <p className="text-xs text-white/60">Race starts when 2+ players are ready.</p>
               </>
             )}
 
-            <button
-              type="button"
-              onClick={closeMultiplayer}
-              className="pointer-events-auto mt-2 rounded-full bg-white/15 px-5 py-2 text-sm font-semibold hover:bg-white/25"
-            >
-              ← Back to menu
-            </button>
+            {/* Footer: join-mode toggle + back to menu */}
+            <div className="mt-2 flex flex-col items-center gap-2">
+              {!mpState && !mpJoinMode && (
+                <button
+                  type="button"
+                  onClick={() => void switchToJoinMode()}
+                  className="pointer-events-auto text-sm font-semibold text-white/70 underline-offset-4 hover:text-white hover:underline"
+                >
+                  🔑 Have a code? Join one instead
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={closeMultiplayer}
+                className="pointer-events-auto rounded-full bg-white/15 px-5 py-2 text-sm font-semibold hover:bg-white/25"
+              >
+                ← Back to menu
+              </button>
+            </div>
           </div>
         </div>
       )}

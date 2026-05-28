@@ -1,3 +1,6 @@
+// MUST be first — installs Symbol.metadata before any @colyseus/schema decorator runs.
+import './polyfill';
+
 import { createServer } from 'http';
 
 import { WebSocketTransport } from '@colyseus/ws-transport';
