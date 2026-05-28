@@ -67,6 +67,73 @@ const DINOS: { id: DinoType; label: string }[] = [
   { id: 'trex', label: '📦 Trex' },
 ];
 
+// ── Bot AI ────────────────────────────────────────────────────────────────────────
+type BotDifficulty = 'easy' | 'normal' | 'hard';
+
+interface Bot {
+  id: string;
+  name: string;
+  character: DinoType;
+  distance: number;
+  lane: number;
+  y: number;
+  speed: number; // internal units/sec
+  hearts: number;
+  finished: boolean;
+  // AI state
+  laneChangeAt: number; // epoch-ms — when to next consider switching lanes
+  abilityCharge: number; // 0..100
+  abilityReadyAt: number; // epoch-ms — earliest moment to fire next ability
+  frozenUntil: number; // own immobilise state (set by other players' Freeze / Trap)
+  stunSpeedCapUntil: number; // own slow state (set by Thunder / Water)
+}
+
+interface BotProfile {
+  baseSpeed: number;
+  speedVariance: number;
+  abilityChance: number; // when ready, % chance to actually cast
+  abilityTargetsPlayer: boolean; // hard mode only
+  laneSmartness: number; // 0..1 — higher = more likely to chase player's lane
+}
+const BOT_PROFILES: Record<BotDifficulty, BotProfile> = {
+  easy: { baseSpeed: 10.5, speedVariance: 1.5, abilityChance: 0, abilityTargetsPlayer: false, laneSmartness: 0 },
+  normal: { baseSpeed: 12.5, speedVariance: 2.5, abilityChance: 0.45, abilityTargetsPlayer: false, laneSmartness: 0.25 },
+  hard: { baseSpeed: 15, speedVariance: 3, abilityChance: 0.7, abilityTargetsPlayer: true, laneSmartness: 0.55 },
+};
+
+// Whimsical bot name pool — different vibes so 3 bots in a race read distinctly.
+const BOT_NAME_POOL = [
+  'Speedy', 'Thunder', 'Tanky', 'Webby', 'Frosty', 'Boom', 'Stomp', 'Roar',
+  'Zappy', 'Spike', 'Swift', 'Crunch', 'Blitz', 'Smash', 'Dash',
+];
+function pickBotNames(n: number): string[] {
+  const pool = [...BOT_NAME_POOL];
+  const out: string[] = [];
+  for (let i = 0; i < n; i++) {
+    if (pool.length === 0) {
+      out.push(`Bot${i + 1}`);
+      continue;
+    }
+    const idx = Math.floor(Math.random() * pool.length);
+    out.push(pool.splice(idx, 1)[0]!);
+  }
+  return out;
+}
+// 3 bots → assign distinct dinos from {trik, stego, brachio} (skip trex for AoE comfort).
+// 4+ would include trex; capped at 3 here so we never run out of unique slots.
+function pickBotDinos(n: number, exclude: DinoType): DinoType[] {
+  const all: DinoType[] = ['trik', 'stego', 'brachio', 'trex'];
+  // Shuffle and prefer not matching the player's dino — keeps variety.
+  const pool = all.filter((d) => d !== exclude);
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j]!, pool[i]!];
+  }
+  const out: DinoType[] = [];
+  for (let i = 0; i < n; i++) out.push(pool[i % pool.length]!);
+  return out;
+}
+
 export function RunnerCanvas() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
@@ -114,6 +181,20 @@ export function RunnerCanvas() {
   // Tracks epoch-ms when we're vulnerable again, keyed by casterId.
   const HIT_GRACE_MS = 500;
   const hitGraceRef = useRef<Map<string, number>>(new Map());
+
+  // ── Bot AI state ────────────────────────────────────────────────────────────
+  // botSetup, when non-null during a run, drives the local-only bot simulation. The
+  // bot tick interval ticks them at 10Hz (matches the MP position sync rate). Bots
+  // are passed to the runner as RunnerOpponents — same code path as multiplayer
+  // ghosts — so visuals + collision come "for free".
+  const [showBotSetup, setShowBotSetup] = useState(false);
+  const [botCount, setBotCount] = useState(2);
+  const [botDifficulty, setBotDifficulty] = useState<BotDifficulty>('normal');
+  const botsRef = useRef<Bot[]>([]);
+  const botBoxesRef = useRef<{ id: string; ownerId: string; type: 'water' | 'fire' | 'trap'; lane: number; distance: number }[]>([]);
+  const botTickRef = useRef<number | null>(null);
+  const botModeRef = useRef<{ difficulty: BotDifficulty } | null>(null);
+  const PLAYER_SELF_ID = 'self'; // synthetic id used for the local player in bot mode
   // Kill-feed: rolling log of who cast what on whom. Max 4 visible, each fades after 3s.
   // Structured (not HTML) so player names render through React's normal escaping — no XSS.
   interface FeedEntry {
@@ -186,12 +267,15 @@ export function RunnerCanvas() {
       return;
     }
     if (mpScreen === 'race' && mpRef.current) {
-      // Multiplayer: tell the server, then burn the local charge. The server broadcasts
-      // back via onAbility (handled in mpConnect) — that's where we play the cast effect.
+      // Multiplayer: server picks targets + broadcasts back via onAbility.
       mpRef.current.ability(abilityKindForDino(selectedDino));
       handleRef.current?.consumeAbilityCharge();
+    } else if (botModeRef.current && botsRef.current.length > 0) {
+      // Solo-vs-bots: targets bots locally (visible-first / weighted-random).
+      castPlayerAbilityOnBots();
+      handleRef.current?.consumeAbilityCharge();
     } else {
-      // Solo fallback (per-dino local boost defined inside runner.ts castAbility).
+      // Pure solo: per-dino local boost defined inside runner.ts castAbility.
       handleRef.current?.useAbility();
     }
   }
@@ -398,6 +482,281 @@ export function RunnerCanvas() {
     });
   }
 
+  // ── Bot tick ────────────────────────────────────────────────────────────────
+  // Runs at 10Hz while a bot-mode run is active. Advances bot positions, decides
+  // lane changes + ability casts, resolves bot-vs-box collisions, then pushes the
+  // latest snapshot to the runner as opponents + dropped-boxes.
+  function tickBots(dt: number) {
+    if (!handleRef.current) return;
+    const mode = botModeRef.current;
+    if (!mode) return;
+    const profile = BOT_PROFILES[mode.difficulty];
+    const now = Date.now();
+    const playerDistance = mpStatsRef.current.distance;
+    const playerLane = mpStatsRef.current.lane;
+    const myHearts = mpStatsRef.current.hearts;
+    const playerAlive = myHearts > 0 && !over;
+
+    // 1. Tick each bot.
+    for (const bot of botsRef.current) {
+      if (bot.finished) continue;
+      // Hearts hit zero → bot is done. Stays in the world but stops acting.
+      if (bot.hearts <= 0) {
+        bot.finished = true;
+        pushFeed({ kind: 'pull', verb: '💀 collapsed', casterName: bot.name, casterIsMe: false, targets: [], fizzled: true });
+        continue;
+      }
+      // Frozen by another player's Freeze / Trap → can't move or act.
+      if (now < bot.frozenUntil) continue;
+
+      // Move forward (effective speed factors in stun-cap).
+      let eff = bot.speed;
+      if (now < bot.stunSpeedCapUntil) eff = Math.min(eff, 7);
+      bot.distance += eff * dt;
+      // Gradually recover from stun-cap by drifting speed back to base.
+      if (now >= bot.stunSpeedCapUntil && bot.speed < profile.baseSpeed) {
+        bot.speed = Math.min(profile.baseSpeed + bot.speed * 0.001, bot.speed + dt * 2);
+      }
+
+      // Lane change decision (every ~2-4s). Smartness biases toward player's lane.
+      if (now > bot.laneChangeAt) {
+        let target = bot.lane;
+        if (Math.random() < 0.55) {
+          if (Math.random() < profile.laneSmartness && playerAlive) {
+            target = playerLane; // try to crowd the player
+          } else {
+            target = Math.floor(Math.random() * 3);
+          }
+        }
+        bot.lane = Math.max(0, Math.min(2, target));
+        bot.laneChangeAt = now + 1500 + Math.random() * 2500;
+      }
+
+      // Charge the bot's ability (about 20s solo / faster in hard).
+      const chargeRate = mode.difficulty === 'hard' ? 8 : mode.difficulty === 'normal' ? 5.5 : 4;
+      bot.abilityCharge = Math.min(100, bot.abilityCharge + chargeRate * dt);
+
+      // Decide cast.
+      if (bot.abilityCharge >= 100 && now > bot.abilityReadyAt) {
+        if (Math.random() < profile.abilityChance) {
+          castBotAbility(bot, profile, playerAlive);
+          bot.abilityCharge = 0;
+        }
+        bot.abilityReadyAt = now + 3000 + Math.random() * 4000;
+      }
+    }
+
+    // 2. Bot-vs-dropped-box collisions (boxes the player or another Trex bot dropped).
+    for (const bot of botsRef.current) {
+      if (bot.finished || now < bot.frozenUntil) continue;
+      for (let i = botBoxesRef.current.length - 1; i >= 0; i--) {
+        const box = botBoxesRef.current[i]!;
+        if (box.ownerId === bot.id) continue; // owner-immune
+        if (box.lane !== bot.lane) continue;
+        if (Math.abs(box.distance - bot.distance) > 1.5) continue;
+        // Hit
+        if (box.type === 'fire') bot.hearts = Math.max(0, bot.hearts - 1);
+        else if (box.type === 'water') {
+          bot.stunSpeedCapUntil = now + 2000;
+          bot.speed = Math.max(6, bot.speed * 0.5);
+        } else if (box.type === 'trap') bot.frozenUntil = now + 1500;
+        // Push a kill-feed entry attributing it to the box owner.
+        const ownerName = box.ownerId === PLAYER_SELF_ID ? 'YOU' : botsRef.current.find((b) => b.id === box.ownerId)?.name ?? 'someone';
+        const ownerIsMe = box.ownerId === PLAYER_SELF_ID;
+        const verb = box.type === 'fire' ? '🔥 burned' : box.type === 'water' ? '💧 soaked' : '📦 trapped';
+        pushFeed({ kind: 'box', verb, casterName: ownerName, casterIsMe: ownerIsMe, targets: [{ name: bot.name, isMe: false }], fizzled: false });
+        // Remove the box from the world + tell the runner to forget its mesh.
+        botBoxesRef.current.splice(i, 1);
+        handleRef.current?.forgetDroppedBox(box.id);
+      }
+    }
+
+    // 3. Cull boxes that have scrolled far behind everyone.
+    for (let i = botBoxesRef.current.length - 1; i >= 0; i--) {
+      const b = botBoxesRef.current[i]!;
+      if (playerDistance - b.distance > 30) {
+        botBoxesRef.current.splice(i, 1);
+        handleRef.current?.forgetDroppedBox(b.id);
+      }
+    }
+
+    // 4. Sync snapshot to the runner.
+    const ops: RunnerOpponent[] = botsRef.current.map((b) => ({
+      id: b.id,
+      name: b.name,
+      character: b.character,
+      distance: b.distance,
+      lane: b.lane,
+      y: b.y,
+      finished: b.finished,
+    }));
+    handleRef.current.setOpponents(ops);
+    handleRef.current.setDroppedBoxes(botBoxesRef.current);
+  }
+
+  function castBotAbility(bot: Bot, profile: BotProfile, playerAlive: boolean) {
+    const kind = abilityKindForDino(bot.character);
+    const now = Date.now();
+
+    // Trex — drop a box ahead of self instead of targeting.
+    if (kind === 'box') {
+      const r = Math.random();
+      const type: 'water' | 'fire' | 'trap' = r < 0.5 ? 'trap' : r < 0.8 ? 'water' : 'fire';
+      botBoxesRef.current.push({
+        id: `b_${bot.id}_${now.toString(36)}`,
+        ownerId: bot.id,
+        type,
+        lane: bot.lane,
+        distance: bot.distance + 3,
+      });
+      const verb = type === 'fire' ? '🔥 dropped fire' : type === 'water' ? '💧 dropped water' : '📦 dropped trap';
+      pushFeed({ kind: 'box', verb, casterName: bot.name, casterIsMe: false, targets: [], fizzled: true });
+      return;
+    }
+
+    // Other abilities — pick a target. Prefer player on hard if visible + ahead.
+    const playerDistance = mpStatsRef.current.distance;
+    const playerAhead = playerDistance > bot.distance;
+    const playerNear = Math.abs(playerDistance - bot.distance) < 60;
+    const canHitPlayer = profile.abilityTargetsPlayer && playerAlive && playerAhead && playerNear;
+
+    if (kind === 'thunder') {
+      // AoE — hits all rivals ahead of bot. Includes player iff hard mode.
+      const beamColor = 0xfde047;
+      const aheadBots = botsRef.current.filter((b) => b.id !== bot.id && !b.finished && b.distance > bot.distance && b.distance - bot.distance < 60);
+      for (const t of aheadBots) {
+        t.stunSpeedCapUntil = now + 1500;
+        t.speed = Math.max(6, t.speed * 0.5);
+        handleRef.current?.showAbilityBeam(bot.id, t.id, beamColor);
+      }
+      const hitPlayer = canHitPlayer;
+      if (hitPlayer) {
+        const grace = hitGraceRef.current.get(bot.id) ?? 0;
+        if (now >= grace) {
+          hitGraceRef.current.set(bot.id, now + HIT_GRACE_MS);
+          handleRef.current?.applyStun(1500);
+          setHitOverlay({ kind: 'thunder', until: now + 1500 });
+          handleRef.current?.showAbilityBeam(bot.id, 'self', beamColor);
+        }
+      }
+      const targets = aheadBots.map((b) => ({ name: b.name, isMe: false }));
+      if (hitPlayer) targets.push({ name: 'YOU', isMe: true });
+      if (targets.length > 0) {
+        pushFeed({ kind, casterName: bot.name, casterIsMe: false, targets, fizzled: false });
+      }
+      return;
+    }
+
+    // pull / freeze: single target
+    type Cand = { kind: 'player' } | { kind: 'bot'; bot: Bot };
+    const candidates: Cand[] = [];
+    const aheadBots = botsRef.current.filter((b) => b.id !== bot.id && !b.finished && b.distance > bot.distance && b.distance - bot.distance < 60);
+    for (const b of aheadBots) candidates.push({ kind: 'bot', bot: b });
+    if (canHitPlayer) candidates.push({ kind: 'player' });
+    if (candidates.length === 0) return;
+    const chosen = candidates[Math.floor(Math.random() * candidates.length)]!;
+
+    const beamColor = kind === 'freeze' ? 0x60a5fa : 0xef4444;
+    if (chosen.kind === 'player') {
+      const grace = hitGraceRef.current.get(bot.id) ?? 0;
+      if (now < grace) return;
+      hitGraceRef.current.set(bot.id, now + HIT_GRACE_MS);
+      if (kind === 'freeze') {
+        handleRef.current?.applyFreeze(2000);
+        setHitOverlay({ kind: 'freeze', until: now + 2000 });
+      } else {
+        handleRef.current?.applyHit();
+        setHitOverlay({ kind: 'pull', until: now + 1000 });
+      }
+      handleRef.current?.showAbilityBeam(bot.id, 'self', beamColor);
+      pushFeed({ kind, casterName: bot.name, casterIsMe: false, targets: [{ name: 'YOU', isMe: true }], fizzled: false });
+    } else {
+      const t = chosen.bot;
+      if (kind === 'freeze') t.frozenUntil = now + 2000;
+      else t.hearts = Math.max(0, t.hearts - 1);
+      handleRef.current?.showAbilityBeam(bot.id, t.id, beamColor);
+      pushFeed({ kind, casterName: bot.name, casterIsMe: false, targets: [{ name: t.name, isMe: false }], fizzled: false });
+    }
+  }
+
+  // Player fires their ability in bot-mode → target bots locally (mirrors what the
+  // server does in MP). Visible-first deterministic pick; otherwise weighted-random
+  // toward the leader (same algorithm as RaceRoom).
+  function castPlayerAbilityOnBots() {
+    const kind = abilityKindForDino(selectedDino);
+    const playerDistance = mpStatsRef.current.distance;
+    const now = Date.now();
+
+    if (kind === 'box') {
+      const r = Math.random();
+      const type: 'water' | 'fire' | 'trap' = r < 0.5 ? 'trap' : r < 0.8 ? 'water' : 'fire';
+      botBoxesRef.current.push({
+        id: `p_${now.toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+        ownerId: PLAYER_SELF_ID,
+        type,
+        lane: mpStatsRef.current.lane,
+        distance: playerDistance + 3,
+      });
+      const verb = type === 'fire' ? '🔥 dropped fire' : type === 'water' ? '💧 dropped water' : '📦 dropped trap';
+      pushFeed({ kind: 'box', verb, casterName: 'YOU', casterIsMe: true, targets: [], fizzled: true });
+      showRune('📦 DROPPED!');
+      return;
+    }
+
+    const ahead = botsRef.current.filter((b) => !b.finished && b.distance > playerDistance && b.distance - playerDistance < 60);
+    if (ahead.length === 0) {
+      showRune('🌫️ no target');
+      return;
+    }
+    const beamColor = kind === 'freeze' ? 0x60a5fa : kind === 'pull' ? 0xef4444 : 0xfde047;
+    let targets: Bot[];
+    if (kind === 'thunder') {
+      targets = ahead;
+    } else {
+      const visible = ahead.filter((b) => b.distance - playerDistance < 25);
+      if (visible.length > 0) {
+        visible.sort((a, b) => a.distance - b.distance - (playerDistance - playerDistance));
+        targets = [visible[0]!];
+      } else {
+        ahead.sort((a, b) => b.distance - a.distance);
+        let total = 0;
+        const weights = ahead.map((_, i) => {
+          const w = ahead.length - i;
+          total += w;
+          return w;
+        });
+        let pick = Math.random() * total;
+        let chosen = ahead[0]!;
+        for (let i = 0; i < ahead.length; i++) {
+          pick -= weights[i]!;
+          if (pick <= 0) {
+            chosen = ahead[i]!;
+            break;
+          }
+        }
+        targets = [chosen];
+      }
+    }
+    for (const t of targets) {
+      if (kind === 'freeze') t.frozenUntil = now + 2000;
+      else if (kind === 'pull') t.hearts = Math.max(0, t.hearts - 1);
+      else if (kind === 'thunder') {
+        t.stunSpeedCapUntil = now + 1500;
+        t.speed = Math.max(6, t.speed * 0.5);
+      }
+      handleRef.current?.showAbilityBeam('self', t.id, beamColor);
+    }
+    const label = kind === 'freeze' ? '❄️ FROZE!' : kind === 'pull' ? '🕸️ PULLED!' : '⚡ THUNDER!';
+    showRune(label);
+    pushFeed({
+      kind,
+      casterName: 'YOU',
+      casterIsMe: true,
+      targets: targets.map((t) => ({ name: t.name, isMe: false })),
+      fizzled: false,
+    });
+  }
+
   function pushFeed(partial: Omit<FeedEntry, 'id' | 'until'>) {
     const id = ++feedIdRef.current;
     const until = Date.now() + 3000;
@@ -499,6 +858,10 @@ export function RunnerCanvas() {
       cancelled = true;
       if (runeTimer.current) clearTimeout(runeTimer.current);
       if (chargeTimer.current) clearTimeout(chargeTimer.current);
+      if (botTickRef.current != null) {
+        window.clearInterval(botTickRef.current);
+        botTickRef.current = null;
+      }
       void mpRef.current?.leave();
       mpRef.current = null;
       handleRef.current?.destroy();
@@ -717,7 +1080,7 @@ export function RunnerCanvas() {
     return m > 0 ? `${m}m ${rem}s` : `${s}s`;
   }
 
-  async function start() {
+  async function start(botSetup?: { count: number; difficulty: BotDifficulty }) {
     setStarted(true);
     topSpeedRef.current = 0;
     lsSet('dinoDashDino', selectedDino);
@@ -749,11 +1112,74 @@ export function RunnerCanvas() {
         boost: () => audio.boost(),
       },
     };
-    handleRef.current = createRunner(mountRef.current, { onUpdate, onGameOver, onRune: showRune }, opts);
+    handleRef.current = createRunner(
+      mountRef.current,
+      {
+        onUpdate,
+        onGameOver,
+        onRune: showRune,
+        // Local box collision in bot mode → just forget the box (effect already applied
+        // inside runner.ts), no server roundtrip.
+        onDroppedBoxCollision: (boxId) => {
+          if (botModeRef.current) {
+            botBoxesRef.current = botBoxesRef.current.filter((b) => b.id !== boxId);
+            handleRef.current?.forgetDroppedBox(boxId);
+          }
+        },
+      },
+      opts,
+    );
     // 3-2-1 countdown so the player can settle their fingers on the controls before the
     // run actually starts. Mirrors the multiplayer race-start countdown.
     handleRef.current.setPaused(true);
     setCountdownEnd(Date.now() + 3000);
+    // If bots requested, spin them up + start the AI tick. They begin moving while the
+    // 3-2-1 plays so they fan out a bit by GO.
+    if (botSetup && botSetup.count > 0) startBots(botSetup);
+  }
+
+  // Build the bot roster + start the 10Hz tick. Bots start ~5m ahead of the player so
+  // they're immediately visible on the leaderboard but easy to catch.
+  function startBots(setup: { count: number; difficulty: BotDifficulty }) {
+    const profile = BOT_PROFILES[setup.difficulty];
+    const names = pickBotNames(setup.count);
+    const dinos = pickBotDinos(setup.count, selectedDino);
+    const now = Date.now();
+    const bots: Bot[] = [];
+    for (let i = 0; i < setup.count; i++) {
+      bots.push({
+        id: `bot_${i}_${now.toString(36)}`,
+        name: names[i]!,
+        character: dinos[i]!,
+        distance: 4 + i * 2, // small starting spread
+        lane: 1,
+        y: 0,
+        speed: profile.baseSpeed + (Math.random() * 2 - 1) * profile.speedVariance,
+        hearts: 3,
+        finished: false,
+        laneChangeAt: now + 1000 + Math.random() * 2000,
+        abilityCharge: 0,
+        abilityReadyAt: now + 4000 + Math.random() * 4000,
+        frozenUntil: 0,
+        stunSpeedCapUntil: 0,
+      });
+    }
+    botsRef.current = bots;
+    botBoxesRef.current = [];
+    botModeRef.current = { difficulty: setup.difficulty };
+    handleRef.current?.setSelfId(PLAYER_SELF_ID);
+    // 10Hz tick loop (matches MP pos broadcast rate — synced cadence keeps motion smooth).
+    if (botTickRef.current != null) window.clearInterval(botTickRef.current);
+    botTickRef.current = window.setInterval(() => tickBots(0.1), 100);
+  }
+  function stopBots() {
+    if (botTickRef.current != null) {
+      window.clearInterval(botTickRef.current);
+      botTickRef.current = null;
+    }
+    botsRef.current = [];
+    botBoxesRef.current = [];
+    botModeRef.current = null;
   }
 
   // Multiplayer entrypoint: same as start(), but with the room's seed (deterministic track)
@@ -847,17 +1273,26 @@ export function RunnerCanvas() {
     setStats(EMPTY_STATS);
     topSpeedRef.current = 0;
     handleRef.current?.restart();
+    // If we were racing bots, rebuild a fresh roster (same count + difficulty) so
+    // "play again" feels like a real rematch and not the same exhausted bots.
+    if (botModeRef.current) {
+      const diff = botModeRef.current.difficulty;
+      stopBots();
+      startBots({ count: botCount, difficulty: diff });
+    }
     // Same 3-2-1 grace as the first run.
     handleRef.current?.setPaused(true);
     setCountdownEnd(Date.now() + 3000);
   }
 
   function toMenu() {
-    // Back to the main menu: tear down the running game + any active multiplayer room.
+    // Back to the main menu: tear down the running game + any active multiplayer room
+    // + any solo-vs-bots tick loop.
     handleRef.current?.destroy();
     handleRef.current = null;
     void mpRef.current?.leave();
     mpRef.current = null;
+    stopBots();
     setMpState(null);
     setMpScreen('menu');
     setMpError(null);
@@ -1081,6 +1516,14 @@ export function RunnerCanvas() {
               🏁 Race with friends
             </button>
 
+            <button
+              type="button"
+              onClick={() => setShowBotSetup(true)}
+              className="pointer-events-auto rounded-full bg-emerald-500 px-8 py-3 text-lg font-black text-white shadow-lg ring-2 ring-white/40 transition hover:bg-emerald-400 active:scale-95"
+            >
+              🤖 Race vs Bots
+            </button>
+
             <div className="mt-1 flex flex-wrap justify-center gap-3">
               <button type="button" className={pillBtn} onClick={toggleMute}>
                 {muted ? '🔇 Sound off' : '🔊 Sound on'}
@@ -1090,6 +1533,81 @@ export function RunnerCanvas() {
               </button>
               <button type="button" className={pillBtn} onClick={() => setShowHowTo(true)}>
                 ❓ How to play
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bot-race setup — count + difficulty, then start a solo run with bots. Lives over
+          the menu only (not during a run). Closes itself when Start fires. */}
+      {showBotSetup && !started && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/85 px-6 text-center text-white" style={scrollShellStyle}>
+          <div className="w-full max-w-sm rounded-2xl bg-slate-800 px-6 py-6 ring-2 ring-white/20">
+            <div className="mb-2 text-5xl">🤖</div>
+            <h2 className="mb-4 text-2xl font-black">Race vs Bots</h2>
+
+            <div className="mb-4">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-white/70">How many bots?</p>
+              <div className="flex justify-center gap-2">
+                {[1, 2, 3].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => setBotCount(n)}
+                    className={`rounded-xl px-5 py-2.5 text-lg font-black transition ${
+                      botCount === n ? 'bg-emerald-500 text-white ring-2 ring-emerald-200' : 'bg-white/15 text-white/80 hover:bg-white/25'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mb-5">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-white/70">Difficulty</p>
+              <div className="flex justify-center gap-2">
+                {(['easy', 'normal', 'hard'] as const).map((d) => (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => setBotDifficulty(d)}
+                    className={`rounded-xl px-3 py-2 text-sm font-bold capitalize transition ${
+                      botDifficulty === d ? 'bg-amber-400 text-slate-900 ring-2 ring-amber-200' : 'bg-white/15 text-white/80 hover:bg-white/25'
+                    }`}
+                  >
+                    {d === 'easy' && '🌱 '}
+                    {d === 'normal' && '🎯 '}
+                    {d === 'hard' && '🔥 '}
+                    {d}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] text-white/60">
+                {botDifficulty === 'easy' && 'Slow bots, no abilities. Best for younger players.'}
+                {botDifficulty === 'normal' && 'Bots cast abilities on each other — you race uncontested.'}
+                {botDifficulty === 'hard' && 'Bots cast abilities on YOU too. Expect chaos.'}
+              </p>
+            </div>
+
+            <div className="flex justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => setShowBotSetup(false)}
+                className="rounded-full bg-white/15 px-5 py-2 text-sm font-bold hover:bg-white/25"
+              >
+                ← Back
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBotSetup(false);
+                  void start({ count: botCount, difficulty: botDifficulty });
+                }}
+                className="rounded-full bg-emerald-500 px-8 py-2 text-lg font-black text-white hover:bg-emerald-400"
+              >
+                ▶ Start
               </button>
             </div>
           </div>
@@ -1317,6 +1835,7 @@ export function RunnerCanvas() {
               <li className="pl-4">🛡️ Stego: <b>Freeze Shot</b> — locks the rival in place for 2 seconds.</li>
               <li className="pl-4">🔭 Brachio: <b>Thunder</b> — stuns ALL rivals ahead of you for 1.5 seconds.</li>
               <li>💎 Coins chain into a 🔥 combo. ⚡ ground boosts add km/h.</li>
+              <li>🤖 <b>Race vs Bots</b> from the menu — 1-3 bots, three difficulty tiers. Hard-mode bots will target YOU too.</li>
               <li>❤️ Don&apos;t lose all your hearts!</li>
             </ul>
             <button type="button" onClick={() => setShowHowTo(false)} className="pointer-events-auto mt-2 rounded-full bg-emerald-500 px-6 py-2.5 font-bold hover:bg-emerald-600">
