@@ -102,6 +102,9 @@ export function RunnerCanvas() {
   // phase) and the resume-from-pause countdown. While set, the runner is paused.
   const [countdownEnd, setCountdownEnd] = useState<number | null>(null);
   const [countdownTick, setCountdownTick] = useState(0); // force re-render each 100ms
+  // Confirm-quit modal: when true, show a Cancel/Yes overlay before tearing down a run.
+  // Game-over screen skips this (the run is already done — nothing to confirm).
+  const [confirmQuit, setConfirmQuit] = useState(false);
   const runeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chargeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -404,16 +407,48 @@ export function RunnerCanvas() {
     return () => window.clearTimeout(raf);
   }, [countdownEnd]);
 
-  // Track fullscreen state so the button can show the right icon.
+  // ── Fullscreen (cross-browser) ─────────────────────────────────────────────
+  // Standard `requestFullscreen` is unimplemented in Safari — it uses the `webkit*`
+  // prefixed variants. iPhone Safari has NO element fullscreen at all (only <video>),
+  // but desktop Safari and iPad Safari both work via the prefixed API. We try standard
+  // first, then fall back to webkit. Errors are swallowed (some browsers reject when
+  // not in a user-gesture handler).
+  function getFsElement(): Element | null {
+    const d = document as Document & { webkitFullscreenElement?: Element };
+    return document.fullscreenElement ?? d.webkitFullscreenElement ?? null;
+  }
+  function requestFs(el: HTMLElement): Promise<void> | undefined {
+    const e = el as HTMLElement & { webkitRequestFullscreen?: () => Promise<void> | undefined };
+    if (el.requestFullscreen) return el.requestFullscreen();
+    if (e.webkitRequestFullscreen) return e.webkitRequestFullscreen();
+    return undefined;
+  }
+  function exitFs(): Promise<void> | undefined {
+    const d = document as Document & { webkitExitFullscreen?: () => Promise<void> | undefined };
+    if (document.exitFullscreen) return document.exitFullscreen();
+    if (d.webkitExitFullscreen) return d.webkitExitFullscreen();
+    return undefined;
+  }
+
+  // Track fullscreen state so the button can show the right icon. Listen to BOTH the
+  // standard and webkit-prefixed change events so the icon stays in sync in Safari too.
   useEffect(() => {
-    const h = () => setIsFs(!!document.fullscreenElement);
+    const h = () => setIsFs(getFsElement() != null);
     document.addEventListener('fullscreenchange', h);
-    return () => document.removeEventListener('fullscreenchange', h);
+    document.addEventListener('webkitfullscreenchange', h);
+    return () => {
+      document.removeEventListener('fullscreenchange', h);
+      document.removeEventListener('webkitfullscreenchange', h);
+    };
   }, []);
 
   function toggleFullscreen() {
-    if (!document.fullscreenElement) void wrapRef.current?.requestFullscreen?.();
-    else void document.exitFullscreen?.();
+    if (getFsElement()) {
+      void exitFs();
+    } else if (wrapRef.current) {
+      const p = requestFs(wrapRef.current);
+      if (p) p.catch(() => {/* user-gesture / iOS-Safari reject */});
+    }
   }
 
   // ── Swipe-anywhere controls (touch devices only) ──────────────────────────────
@@ -522,9 +557,9 @@ export function RunnerCanvas() {
     const audio = audioRef.current;
     audio.resume();
     // On phones/tablets auto-enter fullscreen so the browser chrome stops eating the screen.
-    if (isCoarse && !document.fullscreenElement) {
+    if (isCoarse && !getFsElement() && wrapRef.current) {
       try {
-        await wrapRef.current?.requestFullscreen?.();
+        await requestFs(wrapRef.current);
       } catch {
         // some browsers / contexts block it — user can still tap ⛶
       }
@@ -558,9 +593,9 @@ export function RunnerCanvas() {
     audioRef.current ??= new RunnerAudio();
     const audio = audioRef.current;
     audio.resume();
-    if (isCoarse && !document.fullscreenElement) {
+    if (isCoarse && !getFsElement() && wrapRef.current) {
       try {
-        await wrapRef.current?.requestFullscreen?.();
+        await requestFs(wrapRef.current);
       } catch {
         // ignore
       }
@@ -644,6 +679,16 @@ export function RunnerCanvas() {
     setPaused(false);
     setStarted(false);
     setStats(EMPTY_STATS);
+    setConfirmQuit(false);
+    setCountdownEnd(null);
+  }
+  // Pause-screen "Menu" goes through this — confirmation prevents accidental quit during
+  // an active multiplayer race (where leaving means abandoning your friends mid-race).
+  function requestQuit() {
+    setConfirmQuit(true);
+  }
+  function cancelQuit() {
+    setConfirmQuit(false);
   }
 
   function toggleMute() {
@@ -1106,8 +1151,33 @@ export function RunnerCanvas() {
               <button type="button" onClick={resumeWithCountdown} className="rounded-full bg-emerald-500 px-6 py-3 text-lg font-bold text-white hover:bg-emerald-600">
                 ▶ Resume
               </button>
-              <button type="button" onClick={toMenu} className="rounded-full bg-white/20 px-6 py-3 text-lg font-bold text-white hover:bg-white/30">
+              <button type="button" onClick={requestQuit} className="rounded-full bg-white/20 px-6 py-3 text-lg font-bold text-white hover:bg-white/30">
                 🏠 Menu
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quit confirmation — gates the Pause → Menu transition. Multiplayer message tells
+          the player their friends will keep racing without them. The runner stays paused
+          (or running) underneath; we don't tear anything down until they confirm. */}
+      {confirmQuit && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/80 px-6 text-center text-white">
+          <div className="max-w-md rounded-2xl bg-slate-800 px-6 py-5 ring-2 ring-white/20">
+            <div className="mb-2 text-4xl">⚠️</div>
+            <h3 className="mb-1 text-xl font-black">Quit this run?</h3>
+            <p className="mb-4 text-sm text-white/80">
+              {mpScreen === 'race'
+                ? 'Your friends will keep racing without you. You can rejoin the same code only if they restart.'
+                : 'Your current run will end and progress this run will be lost.'}
+            </p>
+            <div className="flex justify-center gap-3">
+              <button type="button" onClick={cancelQuit} className="rounded-full bg-white/15 px-5 py-2 text-sm font-bold hover:bg-white/25">
+                ← Keep playing
+              </button>
+              <button type="button" onClick={toMenu} className="rounded-full bg-red-500 px-5 py-2 text-sm font-bold hover:bg-red-600">
+                🏠 Quit to menu
               </button>
             </div>
           </div>

@@ -154,7 +154,19 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   scene.background = new THREE.Color(0xbae6fd);
   scene.fog = new THREE.Fog(0xbae6fd, 28, 70);
 
-  const camera = new THREE.PerspectiveCamera(62, parent.clientWidth / parent.clientHeight || 1.6, 0.1, 200);
+  // Vertical FOV adapts to aspect ratio. Three.js perspective camera always specifies the
+  // VERTICAL FOV — in portrait that gives a narrow horizontal slice, which makes the dino
+  // look huge, the track look squished, and the screen show less motion per frame (= feels
+  // slower at the same km/h). Widening the FOV in portrait shrinks the dino, exposes more
+  // of the track ahead, and brings back the peripheral motion cues that read as "speed".
+  const LANDSCAPE_FOV = 62;
+  const PORTRAIT_FOV = 78;
+  const camera = new THREE.PerspectiveCamera(LANDSCAPE_FOV, parent.clientWidth / parent.clientHeight || 1.6, 0.1, 200);
+  const syncCameraFov = () => {
+    camera.fov = camera.aspect < 1 ? PORTRAIT_FOV : LANDSCAPE_FOV;
+    camera.updateProjectionMatrix();
+  };
+  syncCameraFov();
   camera.position.set(0, 4.4, 8.5);
   camera.lookAt(0, 1.2, -8);
 
@@ -257,7 +269,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   const speedups: { mesh: THREE.Sprite; shadow: THREE.Mesh; lane: number; amount: number }[] = []; // +km/h boosts (jump to grab)
   const breakables: Breakable[] = []; // 💥 to smash for a rune — gold (1 tap, 1 lane) or crate (2 taps, 2 lanes)
   // Multiplayer ghost dinos — one entry per remote racer, keyed by their server-side id.
-  const ghosts = new Map<string, { dino: DinoCharacter; group: THREE.Group; nameSprite: THREE.Sprite; nameMat: THREE.SpriteMaterial }>();
+  // `freshlySpawned` flips false after the first frame so we snap to position on creation
+  // but interpolate every frame after, eliminating the 10Hz network-update jitter.
+  const ghosts = new Map<string, { dino: DinoCharacter; group: THREE.Group; nameSprite: THREE.Sprite; nameMat: THREE.SpriteMaterial; freshlySpawned: boolean }>();
   let opponentsLatest: RunnerOpponent[] = [];
 
   let laneIndex = 1;
@@ -718,12 +732,27 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
           nameSprite.position.set(0, 1.7, 0);
           group.add(nameSprite);
           scene.add(group);
-          g = { dino, group, nameSprite, nameMat };
+          g = { dino, group, nameSprite, nameMat, freshlySpawned: true };
           ghosts.set(op.id, g);
         }
         const dz2 = op.distance - distance; // their distance minus mine
         const lane = Math.min(2, Math.max(0, op.lane | 0));
-        g.group.position.set(LANES[lane]!, op.y, -dz2); // ahead of me = negative z (further into the screen)
+        // TARGET position from the latest server snapshot. The server broadcasts at ~10Hz,
+        // so without interpolation the ghost teleports in visible jumps. We lerp the group's
+        // current position toward the target every frame — eats the network jitter without
+        // adding perceptible delay (alpha 18 ≈ ~95% closed in 200ms).
+        const tx = LANES[lane]!;
+        const ty = op.y;
+        const tz = -dz2; // ahead of me = negative z (further into the screen)
+        if (g.freshlySpawned) {
+          g.group.position.set(tx, ty, tz); // first frame after creation — snap, don't slide in
+          g.freshlySpawned = false;
+        } else {
+          const alpha = Math.min(1, dt * 18);
+          g.group.position.x += (tx - g.group.position.x) * alpha;
+          g.group.position.y += (ty - g.group.position.y) * alpha;
+          g.group.position.z += (tz - g.group.position.z) * alpha;
+        }
         g.group.visible = !op.finished && Math.abs(dz2) < 50;
         g.dino.play(op.y > 0.4 ? 'jump' : 'run');
         g.dino.update(dt);
@@ -997,7 +1026,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     const h = parent.clientHeight;
     if (!w || !h) return;
     camera.aspect = w / h;
-    camera.updateProjectionMatrix();
+    syncCameraFov(); // pick portrait vs landscape FOV for the new aspect (also calls updateProjectionMatrix)
     renderer.setSize(w, h);
   });
   ro.observe(parent);
