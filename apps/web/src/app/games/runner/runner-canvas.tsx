@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { DinoType } from './dino-character';
+import { defaultServerUrl, makeRoomCode, Multiplayer, type MpPlayer, type MpState } from './multiplayer';
 import { RunnerAudio } from './runner-audio';
-import type { RunnerHandle, RunnerOptions, RunnerStats, RunnerView } from './runner';
+import type { RunnerHandle, RunnerOpponent, RunnerOptions, RunnerStats, RunnerView } from './runner';
 
 // Our profile roster uses 'brachiosaurus'; the dino rig calls it 'brachio'.
 function dinoFor(avatar?: string): DinoType {
@@ -13,53 +14,105 @@ function dinoFor(avatar?: string): DinoType {
   return 'trik';
 }
 
-// Faster start + steeper climb for older kids; gentle for the youngest. No cap — the climb is
-// endless, so start speed + acceleration are what keep the youngest easier for longer.
+// Faster start + steeper climb for older kids; gentle for the youngest. Auto-cap is 70 km/h
+// (≈19.4 internal units/s) so start speeds stop a few notches below that to leave a real ramp.
 function optsForAge(ageBand?: string): RunnerOptions {
   switch (ageBand) {
     case '5-6':
-      return { startSpeed: 11, accel: 0.6 };
+      return { startSpeed: 9, accel: 0.15 }; // ~32 km/h → 70 km/h over ~70s
     case '7-8':
-      return { startSpeed: 13, accel: 0.8 };
+      return { startSpeed: 10, accel: 0.2 };
     case '9-10':
-      return { startSpeed: 15, accel: 1.0 };
+      return { startSpeed: 11, accel: 0.25 }; // default-ish pacing
     case '11-12':
-      return { startSpeed: 17, accel: 1.2 };
+      return { startSpeed: 12, accel: 0.3 };
     case '13-14':
-      return { startSpeed: 19, accel: 1.4 };
+      return { startSpeed: 13, accel: 0.4 };
     default:
-      return { startSpeed: 15, accel: 1.0 };
+      return { startSpeed: 11, accel: 0.25 };
   }
 }
 
-const EMPTY_STATS: RunnerStats = { distance: 0, gems: 0, hearts: 3, shield: false, magnet: false, speed: 0, breakReady: true, combo: 1 };
+// localStorage helpers (standalone persistence — the game ships without the full app).
+function lsNum(key: string): number {
+  try {
+    return Number(localStorage.getItem(key)) || 0;
+  } catch {
+    return 0;
+  }
+}
+function lsSet(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // ignore (private mode)
+  }
+}
+function lsDino(): DinoType {
+  try {
+    const d = localStorage.getItem('dinoDashDino');
+    if (d === 'trik' || d === 'stego' || d === 'brachio' || d === 'trex') return d;
+  } catch {
+    // ignore
+  }
+  return 'trik';
+}
+
+const EMPTY_STATS: RunnerStats = { distance: 0, gems: 0, hearts: 3, shield: false, magnet: false, speed: 0, breakReady: true, combo: 1, lane: 1, y: 0 };
+
+const DINOS: { id: DinoType; label: string }[] = [
+  { id: 'trik', label: '⚡ Trik' },
+  { id: 'stego', label: '🛡️ Stego' },
+  { id: 'brachio', label: '🔭 Brachio' },
+];
 
 export function RunnerCanvas() {
+  const wrapRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<RunnerHandle | null>(null);
-  const bestRef = useRef(0); // best distance loaded for the active child (for "New best!")
-  const persistRef = useRef(false); // only save when a child profile is active
+  const bestRef = useRef(0); // best distance (for "New best!") — synced from localStorage in mount effect
+  const bestSpeedRef = useRef(0); // best km/h (the "rank") — synced in mount effect
+  const bestTimeRef = useRef(0); // longest run duration in seconds — synced in mount effect
+  const persistRef = useRef(false); // also save to the DB when a child profile is active
   const profileRef = useRef<{ ageBand?: string; avatarCharacter?: string }>({});
-  const topSpeedRef = useRef(0); // fastest speed reached this run (internal units) — the "rank"
+  const topSpeedRef = useRef(0); // fastest speed reached this run (internal units)
   const audioRef = useRef<RunnerAudio | null>(null);
 
+  // ALL localStorage-backed state initialises to a server-safe default below, then a mount
+  // effect (see further down) syncs the real value from localStorage. Reading localStorage in
+  // a useState initialiser causes SSR / hydration mismatches because the server has no storage.
   const [stats, setStats] = useState<RunnerStats>(EMPTY_STATS);
   const [best, setBest] = useState(0);
+  const [bestSpeed, setBestSpeed] = useState(0);
+  const [bestTime, setBestTime] = useState(0); // longest survival time in seconds
   const [started, setStarted] = useState(false);
   const [paused, setPaused] = useState(false);
   const [over, setOver] = useState(false);
-  const [finalScore, setFinalScore] = useState({ distance: 0, gems: 0, newBest: false, topSpeed: 0 });
-  const [runeMsg, setRuneMsg] = useState<string | null>(null); // "what you got" popup
-  const [charging, setCharging] = useState(false); // shown if 💥 pressed while on cooldown
-  const [muted, setMuted] = useState(() => {
-    try {
-      return localStorage.getItem('dinoDashMuted') === '1';
-    } catch {
-      return false;
-    }
-  });
+  const [finalScore, setFinalScore] = useState({ distance: 0, gems: 0, newBest: false, topSpeed: 0, durationSec: 0 });
+  const [runeMsg, setRuneMsg] = useState<string | null>(null);
+  const [charging, setCharging] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [selectedDino, setSelectedDino] = useState<DinoType>('trik');
+  const [view, setView] = useState<RunnerView>('follow');
+  const [showHowTo, setShowHowTo] = useState(false);
+  const [isCoarse, setIsCoarse] = useState(false); // true on touch devices (drives auto-fullscreen + larger buttons)
+  const [isFs, setIsFs] = useState(false);
   const runeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chargeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Multiplayer state ───────────────────────────────────────────────────────
+  // `mpScreen` drives which sub-UI is shown. 'menu' = single-player menu (default), 'lobby'
+  // = waiting for room to fill / ready, 'race' = in progress (canvas shown). When in 'race'
+  // we forward stats to the server and feed opponents to the runner.
+  const [mpScreen, setMpScreen] = useState<'menu' | 'lobby' | 'race'>('menu');
+  const [mpCode, setMpCode] = useState('');
+  const [mpName, setMpName] = useState('');
+  const [mpState, setMpState] = useState<MpState | null>(null);
+  const [mpError, setMpError] = useState<string | null>(null);
+  const [mpConnecting, setMpConnecting] = useState(false);
+  const mpRef = useRef<Multiplayer | null>(null);
+  const mpStateRef = useRef<MpState | null>(null);
+  const mpStatsRef = useRef<RunnerStats>(EMPTY_STATS); // latest stats for the pos broadcaster
 
   function showRune(rune: string) {
     setRuneMsg(rune);
@@ -72,9 +125,131 @@ export function RunnerCanvas() {
     chargeTimer.current = setTimeout(() => setCharging(false), 800);
   }
 
-  // Load the active child's profile (age band, avatar, best) once, before the run.
+  // 💥 single-tap smash. Gold breaks on one tap; crates take two fast taps (the runner handles
+  // the crack-then-finish bookkeeping internally).
+  function smashTap() {
+    if (!stats.breakReady) {
+      showCharging();
+      return;
+    }
+    handleRef.current?.breakBox();
+  }
+
+  // ── Multiplayer flow ────────────────────────────────────────────────────────
+  // openMultiplayer → user types name + code, hits Connect → connect() resolves and we land
+  // in the lobby. Ready toggle drives the server start. When phase flips to "racing" we
+  // build the canvas with the room's seed, then start the 10Hz position broadcaster.
+  function openMultiplayer() {
+    setMpScreen('lobby');
+    setMpError(null);
+    if (!mpName) {
+      const stored = (() => {
+        try {
+          return localStorage.getItem('dinoDashName') ?? '';
+        } catch {
+          return '';
+        }
+      })();
+      setMpName(stored || `Dino${Math.floor(Math.random() * 90) + 10}`);
+    }
+  }
+  function closeMultiplayer() {
+    void mpRef.current?.leave();
+    mpRef.current = null;
+    setMpState(null);
+    setMpError(null);
+    setMpConnecting(false);
+    setMpScreen('menu');
+  }
+  async function mpConnect(code: string) {
+    if (mpConnecting || !code || !mpName) return;
+    setMpError(null);
+    setMpConnecting(true);
+    lsSet('dinoDashName', mpName);
+    try {
+      const mp = new Multiplayer();
+      mpRef.current = mp;
+      await mp.connect(code.toUpperCase(), mpName, selectedDino, {
+        onState: (s) => setMpState(s),
+        onError: (msg) => setMpError(msg),
+        onLeave: () => {
+          setMpState(null);
+          setMpError('Disconnected from room.');
+        },
+      });
+    } catch (e) {
+      setMpError((e as Error).message || 'Failed to connect to server.');
+      mpRef.current = null;
+    } finally {
+      setMpConnecting(false);
+    }
+  }
+  function mpHost() {
+    const code = makeRoomCode();
+    setMpCode(code);
+    void mpConnect(code);
+  }
+  function mpJoin() {
+    if (mpCode.length >= 3) void mpConnect(mpCode);
+  }
+  function mpToggleReady() {
+    if (!mpState) return;
+    const me = mpState.players.find((p) => p.id === mpState.myId);
+    mpRef.current?.ready(!me?.ready);
+  }
+
+  // Whenever the room state changes, mirror to the ref + push opponents into the live runner.
   useEffect(() => {
+    mpStateRef.current = mpState;
+    if (!mpState || !handleRef.current) return;
+    const ops: RunnerOpponent[] = mpState.players
+      .filter((p) => p.id !== mpState.myId)
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        character: p.character,
+        distance: p.distance,
+        lane: p.lane,
+        y: p.y,
+        finished: p.finished,
+      }));
+    handleRef.current.setOpponents(ops);
+  }, [mpState]);
+
+  // Phase transitions: lobby → racing kicks off the run with the shared seed.
+  useEffect(() => {
+    if (mpState?.phase === 'racing' && mpScreen === 'lobby') {
+      setMpScreen('race');
+      void startMpRace();
+    }
+  }, [mpState?.phase, mpScreen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load the active child's profile (age, avatar, DB best) if signed in. Optional — the game runs
+  // standalone with localStorage; this just merges in a logged-in child's saved progress.
+  useEffect(() => {
+    // Hydrate localStorage-backed UI state HERE (not in useState) so the first client render
+    // exactly matches the SSR-rendered HTML — otherwise React throws a hydration error.
+    bestRef.current = lsNum('dinoDashBestDist');
+    bestSpeedRef.current = lsNum('dinoDashBestSpeed');
+    bestTimeRef.current = lsNum('dinoDashBestTime');
+    if (bestRef.current) setBest(bestRef.current);
+    if (bestSpeedRef.current) setBestSpeed(bestSpeedRef.current);
+    if (bestTimeRef.current) setBestTime(bestTimeRef.current);
+    try {
+      if (localStorage.getItem('dinoDashMuted') === '1') setMuted(true);
+      if (localStorage.getItem('dinoDashView') === 'close') setView('close');
+      const d = lsDino();
+      if (d !== 'trik') setSelectedDino(d);
+    } catch {
+      // ignore (private mode)
+    }
     let cancelled = false;
+    let hadDinoPref = false;
+    try {
+      hadDinoPref = !!localStorage.getItem('dinoDashDino');
+    } catch {
+      // ignore
+    }
     void fetch('/api/game/progress')
       .then((r) => r.json())
       .catch(() => null)
@@ -83,12 +258,20 @@ export function RunnerCanvas() {
         const child = (data?.child ?? null) as { ageBand?: string; avatarCharacter?: string } | null;
         profileRef.current = child ?? {};
         persistRef.current = !!child;
-        const loadedBest = Number(data?.progress?.runnerBestDistance ?? 0);
-        bestRef.current = loadedBest;
-        setBest(loadedBest);
+        const dbBest = Number(data?.progress?.runnerBestDistance ?? 0);
+        const dbSpeed = Number(data?.progress?.runnerBestSpeed ?? 0);
+        bestRef.current = Math.max(bestRef.current, dbBest);
+        bestSpeedRef.current = Math.max(bestSpeedRef.current, dbSpeed);
+        setBest(bestRef.current);
+        setBestSpeed(bestSpeedRef.current);
+        if (!hadDinoPref && child?.avatarCharacter) setSelectedDino(dinoFor(child.avatarCharacter));
       });
     return () => {
       cancelled = true;
+      if (runeTimer.current) clearTimeout(runeTimer.current);
+      if (chargeTimer.current) clearTimeout(chargeTimer.current);
+      void mpRef.current?.leave();
+      mpRef.current = null;
       handleRef.current?.destroy();
       handleRef.current = null;
       audioRef.current?.dispose();
@@ -109,41 +292,185 @@ export function RunnerCanvas() {
     return () => window.removeEventListener('keydown', onKey);
   }, [started, over, paused]);
 
+  // Detect touch devices so we can swap arrow buttons for a virtual joystick on the left.
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(pointer: coarse)');
+    setIsCoarse(mq.matches);
+    const h = (e: MediaQueryListEvent) => setIsCoarse(e.matches);
+    mq.addEventListener('change', h);
+    return () => mq.removeEventListener('change', h);
+  }, []);
+
+  // Track fullscreen state so the button can show the right icon.
+  useEffect(() => {
+    const h = () => setIsFs(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', h);
+    return () => document.removeEventListener('fullscreenchange', h);
+  }, []);
+
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) void wrapRef.current?.requestFullscreen?.();
+    else void document.exitFullscreen?.();
+  }
+
+  // ── Split-axis virtual joysticks (touch devices only) ──────────────────────────
+  // LEFT half → vertical joystick (drag up = jump, down = slide). RIGHT half → horizontal
+  // joystick (drag left/right to change lane). Each joystick anchors at the finger's first
+  // touch point and only listens for movement on its own axis, so wobble on the other axis
+  // can't trigger a wrong move. Both joysticks can be held simultaneously (multi-touch).
+  const JOY_FIRE = 32; // px past origin → fire
+  const JOY_RESET = 12; // px back toward origin → re-arm (hysteresis)
+  const leftIdRef = useRef<number | null>(null);
+  const leftAnchorRef = useRef<{ x: number; y: number } | null>(null);
+  const leftArmedRef = useRef<'up' | 'down' | null>(null);
+  const rightIdRef = useRef<number | null>(null);
+  const rightAnchorRef = useRef<{ x: number; y: number } | null>(null);
+  const rightArmedRef = useRef<'left' | 'right' | null>(null);
+  const [leftJoy, setLeftJoy] = useState<{ x: number; y: number; dy: number } | null>(null);
+  const [rightJoy, setRightJoy] = useState<{ x: number; y: number; dx: number } | null>(null);
+
+  const onWrapTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!playing) return;
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]!;
+      const x = t.clientX - rect.left;
+      const y = t.clientY - rect.top;
+      if (x < rect.width / 2) {
+        if (leftIdRef.current === null) {
+          leftIdRef.current = t.identifier;
+          leftAnchorRef.current = { x, y };
+          leftArmedRef.current = null;
+          setLeftJoy({ x, y, dy: 0 });
+        }
+      } else if (rightIdRef.current === null) {
+        rightIdRef.current = t.identifier;
+        rightAnchorRef.current = { x, y };
+        rightArmedRef.current = null;
+        setRightJoy({ x, y, dx: 0 });
+      }
+    }
+  };
+  const onWrapTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!playing) return;
+    const rect = wrapRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]!;
+      if (t.identifier === leftIdRef.current && leftAnchorRef.current) {
+        const dy = t.clientY - rect.top - leftAnchorRef.current.y;
+        setLeftJoy({ x: leftAnchorRef.current.x, y: leftAnchorRef.current.y, dy });
+        const mag = Math.abs(dy);
+        if (mag < JOY_RESET) leftArmedRef.current = null;
+        else if (mag >= JOY_FIRE) {
+          const dir: 'up' | 'down' = dy < 0 ? 'up' : 'down';
+          if (leftArmedRef.current !== dir) {
+            leftArmedRef.current = dir;
+            if (dir === 'up') handleRef.current?.jump();
+            else handleRef.current?.slide();
+          }
+        }
+      } else if (t.identifier === rightIdRef.current && rightAnchorRef.current) {
+        const dx = t.clientX - rect.left - rightAnchorRef.current.x;
+        setRightJoy({ x: rightAnchorRef.current.x, y: rightAnchorRef.current.y, dx });
+        const mag = Math.abs(dx);
+        if (mag < JOY_RESET) rightArmedRef.current = null;
+        else if (mag >= JOY_FIRE) {
+          const dir: 'left' | 'right' = dx > 0 ? 'right' : 'left';
+          if (rightArmedRef.current !== dir) {
+            rightArmedRef.current = dir;
+            if (dir === 'right') handleRef.current?.moveRight();
+            else handleRef.current?.moveLeft();
+          }
+        }
+      }
+    }
+  };
+  const onWrapTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i]!;
+      if (t.identifier === leftIdRef.current) {
+        leftIdRef.current = null;
+        leftAnchorRef.current = null;
+        leftArmedRef.current = null;
+        setLeftJoy(null);
+      } else if (t.identifier === rightIdRef.current) {
+        rightIdRef.current = null;
+        rightAnchorRef.current = null;
+        rightArmedRef.current = null;
+        setRightJoy(null);
+      }
+    }
+  };
+
   const onUpdate = (s: RunnerStats) => {
     if (s.speed > topSpeedRef.current) topSpeedRef.current = s.speed;
     setStats(s);
   };
 
-  const onGameOver = (distance: number, gems: number) => {
+  const onGameOver = (distance: number, gems: number, durationSec: number) => {
     const newBest = distance > bestRef.current;
     if (newBest) {
       bestRef.current = distance;
       setBest(distance);
+      lsSet('dinoDashBestDist', String(distance));
     }
-    setFinalScore({ distance, gems, newBest, topSpeed: topSpeedRef.current });
+    const topKmh = Math.round(topSpeedRef.current * 3.6);
+    if (topKmh > bestSpeedRef.current) {
+      bestSpeedRef.current = topKmh;
+      setBestSpeed(topKmh);
+      lsSet('dinoDashBestSpeed', String(topKmh));
+    }
+    const durRounded = Math.round(durationSec);
+    if (durRounded > bestTimeRef.current) {
+      bestTimeRef.current = durRounded;
+      setBestTime(durRounded);
+      lsSet('dinoDashBestTime', String(durRounded));
+    }
+    setFinalScore({ distance, gems, newBest, topSpeed: topSpeedRef.current, durationSec });
     setOver(true);
     if (persistRef.current) {
       void fetch('/api/game/progress', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ kind: 'runner', distance, gems, topSpeed: Math.round(topSpeedRef.current * 3.6) }),
+        body: JSON.stringify({ kind: 'runner', distance, gems, topSpeed: topKmh }),
       }).catch(() => {});
     }
   };
 
-  // Camera is chosen here, before the run, and stays fixed (fair for multiplayer).
-  async function start(view: RunnerView) {
+  // Format a duration in seconds as "1m 23s" / "45s" — used for both the menu best line and
+  // the game-over screen.
+  function fmtTime(sec: number) {
+    const s = Math.max(0, Math.floor(sec));
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    return m > 0 ? `${m}m ${rem}s` : `${s}s`;
+  }
+
+  async function start() {
     setStarted(true);
     topSpeedRef.current = 0;
+    lsSet('dinoDashDino', selectedDino);
+    lsSet('dinoDashView', view);
     // Create + resume audio inside the Play tap (browsers require a gesture to start sound).
     audioRef.current ??= new RunnerAudio();
     const audio = audioRef.current;
     audio.resume();
+    // On phones/tablets auto-enter fullscreen so the browser chrome stops eating the screen.
+    if (isCoarse && !document.fullscreenElement) {
+      try {
+        await wrapRef.current?.requestFullscreen?.();
+      } catch {
+        // some browsers / contexts block it — user can still tap ⛶
+      }
+    }
     const { createRunner } = await import('./runner');
     if (!mountRef.current || handleRef.current) return;
     const opts: RunnerOptions = {
       ...optsForAge(profileRef.current.ageBand),
-      character: dinoFor(profileRef.current.avatarCharacter),
+      character: selectedDino,
       view,
       sfx: {
         jump: () => audio.jump(),
@@ -157,6 +484,68 @@ export function RunnerCanvas() {
     handleRef.current = createRunner(mountRef.current, { onUpdate, onGameOver, onRune: showRune }, opts);
   }
 
+  // Multiplayer entrypoint: same as start(), but with the room's seed (deterministic track)
+  // and a dedicated game-over hook that tells the server we're finished. The 10Hz pos
+  // broadcaster pulls from mpStatsRef, which onUpdate keeps fresh.
+  async function startMpRace() {
+    const state = mpStateRef.current;
+    if (!state) return;
+    setStarted(true);
+    topSpeedRef.current = 0;
+    audioRef.current ??= new RunnerAudio();
+    const audio = audioRef.current;
+    audio.resume();
+    if (isCoarse && !document.fullscreenElement) {
+      try {
+        await wrapRef.current?.requestFullscreen?.();
+      } catch {
+        // ignore
+      }
+    }
+    const { createRunner } = await import('./runner');
+    if (!mountRef.current || handleRef.current) return;
+    const opts: RunnerOptions = {
+      ...optsForAge(profileRef.current.ageBand),
+      character: selectedDino,
+      view,
+      seed: state.seed,
+      sfx: {
+        jump: () => audio.jump(),
+        coin: () => audio.coin(),
+        smash: () => audio.smash(),
+        hit: () => audio.hit(),
+        rune: () => audio.rune(),
+        boost: () => audio.boost(),
+      },
+    };
+    handleRef.current = createRunner(
+      mountRef.current,
+      {
+        onUpdate: (s) => {
+          mpStatsRef.current = s;
+          onUpdate(s);
+        },
+        onGameOver: (distance, gems, durationSec) => {
+          mpRef.current?.finish();
+          mpRef.current?.stopPosLoop();
+          onGameOver(distance, gems, durationSec);
+        },
+        onRune: showRune,
+      },
+      opts,
+    );
+    // Seed in initial opponents (handler in the mpState effect will keep updating after this).
+    const ops: RunnerOpponent[] = state.players
+      .filter((p) => p.id !== state.myId)
+      .map((p) => ({ id: p.id, name: p.name, character: p.character, distance: p.distance, lane: p.lane, y: p.y, finished: p.finished }));
+    handleRef.current.setOpponents(ops);
+    mpRef.current?.startPosLoop(() => ({
+      distance: mpStatsRef.current.distance,
+      lane: mpStatsRef.current.lane,
+      y: mpStatsRef.current.y,
+    }));
+  }
+
   function playAgain() {
     setOver(false);
     setPaused(false);
@@ -165,9 +554,25 @@ export function RunnerCanvas() {
     handleRef.current?.restart();
   }
 
+  function toMenu() {
+    // Back to the main menu: tear down the running game + any active multiplayer room.
+    handleRef.current?.destroy();
+    handleRef.current = null;
+    void mpRef.current?.leave();
+    mpRef.current = null;
+    setMpState(null);
+    setMpScreen('menu');
+    setMpError(null);
+    setOver(false);
+    setPaused(false);
+    setStarted(false);
+    setStats(EMPTY_STATS);
+  }
+
   function toggleMute() {
     const next = !muted;
     setMuted(next);
+    lsSet('dinoDashMuted', next ? '1' : '0');
     audioRef.current?.setMuted(next);
   }
 
@@ -176,13 +581,38 @@ export function RunnerCanvas() {
     handleRef.current?.setPaused(next);
   }
 
-  const ctrlBtn =
-    'pointer-events-auto select-none rounded-full bg-white/20 px-5 py-4 text-2xl font-bold text-white backdrop-blur active:bg-white/40';
-  const viewCard =
-    'pointer-events-auto w-56 rounded-2xl bg-white/15 px-5 py-4 text-lg font-bold backdrop-blur transition hover:bg-white/25 active:bg-white/35';
+  // D-pad arrow buttons. `touch-manipulation` kills the 300ms tap-delay + double-tap zoom on
+  // mobile. Buttons sized larger on coarse-pointer devices so thumbs land cleanly.
+  const dpadBtn = isCoarse
+    ? 'pointer-events-auto touch-manipulation select-none rounded-full bg-white/25 px-7 py-5 text-3xl font-bold text-white backdrop-blur active:bg-white/45'
+    : 'pointer-events-auto touch-manipulation select-none rounded-full bg-white/20 px-5 py-4 text-2xl font-bold text-white backdrop-blur active:bg-white/40';
+  const smashSize = isCoarse ? 'px-7 py-5 text-3xl' : 'px-5 py-4 text-2xl';
+  const smashReady = 'bg-amber-400 text-slate-900 ring-4 ring-amber-200/80 active:bg-amber-300 touch-manipulation';
+  const smashCooling = 'border-2 border-dashed border-white/30 bg-white/5 text-white/25 touch-manipulation';
+  const pillBtn = 'pointer-events-auto rounded-full bg-white/20 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/30';
+  const pick = (active: boolean) =>
+    `pointer-events-auto rounded-xl px-3 py-2 text-sm font-bold backdrop-blur transition ${
+      active ? 'bg-white text-emerald-700 ring-2 ring-white' : 'bg-white/20 text-white hover:bg-white/30'
+    }`;
+  // "Playing" = a run is active. Used to gate the joystick handlers + touchAction so that the
+  // menu / how-to / pause / game-over overlays scroll natively on landscape phones.
+  const playing = started && !over && !paused && !showHowTo;
+  // Reusable scroll-overlay shell (fixed-to-viewport so heights don't depend on the wrap div
+  // chain, with iOS momentum scroll + overscroll containment for predictable touch panning).
+  const scrollShellStyle: React.CSSProperties = { WebkitOverflowScrolling: 'touch', touchAction: 'auto' };
 
   return (
-    <div className="relative h-full w-full bg-sky-200">
+    <div
+      ref={wrapRef}
+      className="relative h-full w-full bg-sky-200"
+      // Block browser scroll/zoom only during active play. Touch handlers drive the split-axis
+      // joysticks on coarse-pointer devices; desktop uses the D-pad buttons instead.
+      style={{ touchAction: playing ? 'none' : 'auto' }}
+      onTouchStart={isCoarse && playing ? onWrapTouchStart : undefined}
+      onTouchMove={isCoarse && playing ? onWrapTouchMove : undefined}
+      onTouchEnd={isCoarse && playing ? onWrapTouchEnd : undefined}
+      onTouchCancel={isCoarse && playing ? onWrapTouchEnd : undefined}
+    >
       <div ref={mountRef} className="h-full w-full" />
 
       {/* HUD (only once running) */}
@@ -204,24 +634,21 @@ export function RunnerCanvas() {
         </div>
       )}
 
-      {/* Mute toggle (always available) */}
-      <button
-        type="button"
-        onClick={toggleMute}
-        className="pointer-events-auto absolute right-3 top-2 rounded-full bg-white/20 px-3 py-1.5 text-base font-bold text-white backdrop-blur active:bg-white/40"
-      >
-        {muted ? '🔇' : '🔊'}
-      </button>
-
-      {/* Pause button (single-player) */}
-      {started && !over && !paused && (
-        <button
-          type="button"
-          onClick={() => togglePause(true)}
-          className="pointer-events-auto absolute right-3 top-14 rounded-full bg-white/20 px-3 py-1.5 text-sm font-bold text-white backdrop-blur active:bg-white/40"
-        >
-          ⏸ Pause
-        </button>
+      {/* Sound + Pause (in-game) */}
+      {started && !over && (
+        <>
+          <button type="button" onClick={toggleMute} className={`${pillBtn} absolute right-3 top-2`}>
+            {muted ? '🔇' : '🔊'}
+          </button>
+          {!paused && (
+            <button type="button" onClick={() => togglePause(true)} className={`${pillBtn} absolute right-3 top-14`}>
+              ⏸ Pause
+            </button>
+          )}
+          <button type="button" onClick={toggleFullscreen} className={`${pillBtn} absolute right-3 top-[6.5rem]`}>
+            {isFs ? '✕' : '⛶'}
+          </button>
+        </>
       )}
 
       {/* Rune reward — what you got from a smashed box */}
@@ -230,104 +657,381 @@ export function RunnerCanvas() {
           {runeMsg}!
         </div>
       )}
-      {/* 💥 pressed while still on cooldown */}
       {charging && (
         <div className="pointer-events-none absolute left-1/2 top-[26%] -translate-x-1/2 rounded-2xl bg-slate-800/90 px-5 py-2.5 text-center text-lg font-bold text-white shadow-lg">
           ⏳ Power charging…
         </div>
       )}
 
-      {/* Pre-game: choose the camera (no in-game toggle — same for everyone in a race) */}
+      {/* ───────── MAIN MENU (first screen on launch) ─────────
+          fixed-to-viewport so the scroll context never depends on any ancestor's computed
+          height (some mobile Chrome builds collapse percentage min-heights through flex chains
+          and break the scroll). min-h-[100dvh] inner centers on tall screens, scrolls on
+          short ones (landscape phones). */}
       {!started && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 bg-slate-900/70 px-6 text-center text-white">
-          <div className="text-5xl">🦖</div>
-          <h2 className="text-2xl font-black">Dino Dash</h2>
-          <p className="text-sm text-white/80">Pick your camera — everyone in a race uses the same one:</p>
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <button type="button" className={viewCard} onClick={() => void start('follow')}>
-              🎥 Follow cam
-              <span className="mt-1 block text-xs font-medium text-white/70">Wider view — see more track ahead</span>
+        <div className="fixed inset-0 z-30 overflow-y-auto overscroll-contain bg-gradient-to-b from-sky-400 to-emerald-500 text-white" style={scrollShellStyle}>
+          <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-4 px-6 py-6 text-center">
+            <div className="text-6xl drop-shadow-lg">🦖</div>
+            <h1 className="text-4xl font-black tracking-tight drop-shadow-lg">Dino Dash</h1>
+            <p className="-mt-2 text-sm font-semibold text-white/90">Run, dodge, smash &amp; dash as far as you can!</p>
+            {best > 0 && (
+              <p className="text-sm font-bold text-amber-200 drop-shadow">
+                🏆 Best: {best}m · {bestSpeed} km/h{bestTime > 0 && <> · ⏱ {fmtTime(bestTime)}</>}
+              </p>
+            )}
+
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-white/70">Your dino</p>
+              <div className="flex gap-2">
+                {DINOS.map((d) => (
+                  <button key={d.id} type="button" className={pick(selectedDino === d.id)} onClick={() => setSelectedDino(d.id)}>
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-white/70">Camera</p>
+              <div className="flex gap-2">
+                <button type="button" className={pick(view === 'follow')} onClick={() => setView('follow')}>
+                  🎥 Follow
+                </button>
+                <button type="button" className={pick(view === 'close')} onClick={() => setView('close')}>
+                  🦖 Close
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => void start()}
+              className="pointer-events-auto mt-2 rounded-full bg-amber-400 px-12 py-4 text-2xl font-black text-slate-900 shadow-lg ring-4 ring-white/60 transition hover:bg-amber-300 active:scale-95"
+            >
+              ▶ PLAY
             </button>
-            <button type="button" className={viewCard} onClick={() => void start('close')}>
-              🦖 Close cam
-              <span className="mt-1 block text-xs font-medium text-white/70">Closer — see your dino &amp; its abilities</span>
+
+            <button
+              type="button"
+              onClick={openMultiplayer}
+              className="pointer-events-auto rounded-full bg-fuchsia-500 px-8 py-3 text-lg font-black text-white shadow-lg ring-2 ring-white/40 transition hover:bg-fuchsia-400 active:scale-95"
+            >
+              🏁 Race with friends
+            </button>
+
+            <div className="mt-1 flex flex-wrap justify-center gap-3">
+              <button type="button" className={pillBtn} onClick={toggleMute}>
+                {muted ? '🔇 Sound off' : '🔊 Sound on'}
+              </button>
+              <button type="button" className={pillBtn} onClick={toggleFullscreen}>
+                {isFs ? '✕ Exit fullscreen' : '⛶ Fullscreen'}
+              </button>
+              <button type="button" className={pillBtn} onClick={() => setShowHowTo(true)}>
+                ❓ How to play
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Multiplayer lobby — host or join a friends-only room (4-char code), then ready up.
+          The server starts the race when ≥2 players have readied; phase change to "racing"
+          dismisses this overlay and starts the game. */}
+      {mpScreen === 'lobby' && !started && (
+        <div className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-gradient-to-b from-fuchsia-900 to-slate-950 text-white" style={scrollShellStyle}>
+          <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-4 px-6 py-6 text-center">
+            <div className="text-5xl">🏁</div>
+            <h2 className="text-3xl font-black">Race with friends</h2>
+
+            {!mpState && (
+              <>
+                <p className="max-w-md text-sm text-white/80">
+                  Pick a name, then <b>Host</b> a room (share the code with friends) or <b>Join</b> a code a friend gave you. Up to 4 players.
+                </p>
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-white/70">Your name</label>
+                  <input
+                    type="text"
+                    value={mpName}
+                    maxLength={16}
+                    onChange={(e) => setMpName(e.target.value.replace(/[^A-Za-z0-9 ._-]/g, ''))}
+                    className="pointer-events-auto rounded-xl bg-white/15 px-4 py-2 text-center text-lg font-bold text-white outline-none ring-2 ring-white/30 focus:ring-white/60"
+                    placeholder="DinoFan"
+                  />
+                </div>
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-white/70">Room code</label>
+                  <input
+                    type="text"
+                    value={mpCode}
+                    maxLength={6}
+                    onChange={(e) => setMpCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                    className="pointer-events-auto rounded-xl bg-white/15 px-4 py-2 text-center text-2xl font-black tracking-widest text-white outline-none ring-2 ring-white/30 focus:ring-white/60"
+                    placeholder="ABCD"
+                  />
+                </div>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    onClick={mpHost}
+                    disabled={mpConnecting || !mpName}
+                    className="pointer-events-auto rounded-full bg-amber-400 px-6 py-3 text-lg font-black text-slate-900 shadow-lg ring-2 ring-white/40 transition hover:bg-amber-300 active:scale-95 disabled:opacity-50"
+                  >
+                    🎲 Host (new code)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={mpJoin}
+                    disabled={mpConnecting || mpCode.length < 3 || !mpName}
+                    className="pointer-events-auto rounded-full bg-emerald-500 px-6 py-3 text-lg font-black text-white shadow-lg ring-2 ring-white/40 transition hover:bg-emerald-400 active:scale-95 disabled:opacity-50"
+                  >
+                    🔑 Join code
+                  </button>
+                </div>
+                {mpConnecting && <p className="text-sm text-white/70">Connecting…</p>}
+                {mpError && (
+                  <p className="max-w-md rounded-xl bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-100 ring-1 ring-red-300/40">
+                    ⚠ {mpError} <span className="block text-xs text-red-200/70">Is the race server running? See ROADMAP / MULTIPLAYER.md.</span>
+                  </p>
+                )}
+              </>
+            )}
+
+            {mpState && (
+              <>
+                <div className="rounded-2xl bg-white/10 px-6 py-3 ring-2 ring-white/30">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-white/70">Room code · share this</p>
+                  <p className="font-mono text-4xl font-black tracking-widest text-amber-200">{mpCode}</p>
+                </div>
+                <div className="w-full max-w-md">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-white/70">Players ({mpState.players.length}/4)</p>
+                  <ul className="flex flex-col gap-1.5">
+                    {mpState.players.map((p) => (
+                      <li
+                        key={p.id}
+                        className={`flex items-center justify-between rounded-xl px-3 py-2 ring-1 ${
+                          p.id === mpState.myId ? 'bg-amber-400/20 ring-amber-300/60' : 'bg-white/10 ring-white/20'
+                        }`}
+                      >
+                        <span className="font-bold">
+                          🦖 {p.name} {p.id === mpState.myId && <span className="text-xs text-amber-200">(you)</span>}
+                        </span>
+                        <span className={`text-sm font-semibold ${p.ready ? 'text-emerald-300' : 'text-white/60'}`}>
+                          {p.ready ? '✓ ready' : 'waiting'}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                {mpState.phase === 'countdown' && (
+                  <p className="text-2xl font-black text-amber-200">
+                    Starting in {Math.max(0, Math.ceil((mpState.startsAt - Date.now()) / 1000))}…
+                  </p>
+                )}
+                {mpState.phase === 'lobby' && (
+                  <button
+                    type="button"
+                    onClick={mpToggleReady}
+                    className={`pointer-events-auto rounded-full px-10 py-3 text-xl font-black shadow-lg ring-2 ring-white/40 transition active:scale-95 ${
+                      mpState.players.find((p) => p.id === mpState.myId)?.ready
+                        ? 'bg-white/30 text-white hover:bg-white/40'
+                        : 'bg-emerald-500 text-white hover:bg-emerald-400'
+                    }`}
+                  >
+                    {mpState.players.find((p) => p.id === mpState.myId)?.ready ? '✕ Not ready' : "✓ I'm ready!"}
+                  </button>
+                )}
+                <p className="text-xs text-white/60">Server starts when 2+ players are ready.</p>
+              </>
+            )}
+
+            <button
+              type="button"
+              onClick={closeMultiplayer}
+              className="pointer-events-auto mt-2 rounded-full bg-white/15 px-5 py-2 text-sm font-semibold hover:bg-white/25"
+            >
+              ← Back to menu
             </button>
           </div>
         </div>
       )}
 
-      {/* On-screen controls (touch + click). Swipes also work. */}
-      {started && !over && !paused && (
+      {/* Live leaderboard during a race — shows everyone's distance in real time. */}
+      {playing && mpScreen === 'race' && mpState && (
+        <div className="pointer-events-none absolute right-3 top-32 z-10 rounded-xl bg-black/40 px-3 py-2 text-xs font-bold text-white backdrop-blur">
+          <p className="mb-1 text-white/70">🏁 Race</p>
+          {[...mpState.players]
+            .sort((a, b) => b.distance - a.distance)
+            .map((p, i) => (
+              <div key={p.id} className={p.id === mpState.myId ? 'text-amber-200' : 'text-white/90'}>
+                {i + 1}. {p.name}: {Math.floor(p.distance)}m {p.finished && '🏁'}
+              </div>
+            ))}
+        </div>
+      )}
+
+      {/* How-to-play overlay (from the menu) — same scroll pattern as the menu. */}
+      {showHowTo && !started && (
+        <div className="fixed inset-0 z-40 overflow-y-auto overscroll-contain bg-slate-900/90 text-white" style={scrollShellStyle}>
+          <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-3 px-8 py-6 text-center">
+            <h2 className="text-2xl font-black">How to play</h2>
+            <ul className="space-y-1.5 text-left text-sm">
+              <li>📱 Mobile / tablet: <b>drag ↑↓ on the LEFT</b> half (jump / slide) · <b>drag ◀▶ on the RIGHT</b> half (change lane) · tap 💥 (bottom-left) to smash.</li>
+              <li>⌨️ Desktop: ←/→ switch lane · ↑/Space jump · ↓ slide · E smash · P pause</li>
+              <li>🟫 Ground box → jump over OR land on top</li>
+              <li>🟦 Flying bar → slide under (no jumping over)</li>
+              <li>💥 Tap once to smash 🟨 gold for a rune. 📦 crates need <b>two fast taps</b> — finish them for a 🎰 JACKPOT! (3s cooldown after a break)</li>
+              <li>💎 Grab coins — chain them for a 🔥 combo · ⚡ boosts go faster</li>
+              <li>❤️ Don&apos;t lose all your hearts!</li>
+            </ul>
+            <button type="button" onClick={() => setShowHowTo(false)} className="pointer-events-auto mt-2 rounded-full bg-emerald-500 px-6 py-2.5 font-bold hover:bg-emerald-600">
+              Got it!
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Desktop D-pad — buttons + smash, hidden on touch (touch uses the joysticks below). */}
+      {playing && !isCoarse && (
         <div className="pointer-events-none absolute inset-x-0 bottom-3 flex items-end justify-between px-4">
           <div className="flex gap-2">
-            <button type="button" className={ctrlBtn} onPointerDown={() => handleRef.current?.moveLeft()}>
+            <button type="button" className={dpadBtn} onPointerDown={() => handleRef.current?.moveLeft()} aria-label="Lane left">
               ◀
             </button>
-            <button type="button" className={ctrlBtn} onPointerDown={() => handleRef.current?.moveRight()}>
+            <button type="button" className={dpadBtn} onPointerDown={() => handleRef.current?.moveRight()} aria-label="Lane right">
               ▶
             </button>
           </div>
           <button
             type="button"
-            className={`pointer-events-auto select-none rounded-full px-5 py-4 text-2xl font-bold backdrop-blur transition ${
-              stats.breakReady
-                ? 'bg-amber-400 text-slate-900 ring-4 ring-amber-200/80 active:bg-amber-300'
-                : 'border-2 border-dashed border-white/30 bg-white/5 text-white/25'
+            className={`pointer-events-auto relative select-none rounded-full ${smashSize} font-bold backdrop-blur transition ${
+              stats.breakReady ? smashReady : smashCooling
             }`}
-            onPointerDown={() => {
-              if (stats.breakReady) handleRef.current?.breakBox();
-              else showCharging();
-            }}
+            onPointerDown={smashTap}
+            aria-label="Smash"
           >
             💥
           </button>
           <div className="flex gap-2">
-            <button type="button" className={ctrlBtn} onPointerDown={() => handleRef.current?.slide()}>
+            <button type="button" className={dpadBtn} onPointerDown={() => handleRef.current?.slide()} aria-label="Slide">
               ▼
             </button>
-            <button type="button" className={ctrlBtn} onPointerDown={() => handleRef.current?.jump()}>
+            <button type="button" className={dpadBtn} onPointerDown={() => handleRef.current?.jump()} aria-label="Jump">
               ▲
             </button>
           </div>
         </div>
       )}
 
-      {/* Paused (single-player) */}
-      {paused && !over && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-slate-900/70 text-center text-white">
-          <div className="text-5xl">⏸️</div>
-          <h2 className="text-2xl font-black">Paused</h2>
+      {/* Touch UI: two single-axis joysticks anchored on the wrap div + the 💥 button pinned
+          next to the vertical joystick area (bottom-left). The joystick disks render at the
+          finger's first touch point and disappear on release. */}
+      {playing && isCoarse && (
+        <>
+          {/* 💥 button — touch-only, stops propagation so the wrap doesn't anchor a joystick here. */}
           <button
             type="button"
-            onClick={() => togglePause(false)}
-            className="rounded-full bg-emerald-500 px-6 py-3 text-lg font-bold text-white hover:bg-emerald-600"
+            className={`pointer-events-auto absolute bottom-4 left-4 z-20 select-none touch-manipulation rounded-full ${smashSize} font-bold backdrop-blur transition ${
+              stats.breakReady ? smashReady : smashCooling
+            }`}
+            onTouchStart={(e) => {
+              e.stopPropagation();
+              smashTap();
+            }}
+            aria-label="Smash"
           >
-            ▶ Resume
+            💥
           </button>
+
+          {/* Vertical joystick (LEFT side) — drag ↑ to jump, ↓ to slide. */}
+          {leftJoy && (
+            <div
+              className="pointer-events-none absolute z-10"
+              style={{ left: leftJoy.x - 40, top: leftJoy.y - 70, width: 80, height: 140 }}
+            >
+              <div className="absolute inset-x-1 inset-y-0 rounded-full border-2 border-white/40 bg-white/10 backdrop-blur" />
+              <span className="absolute left-1/2 top-1 -translate-x-1/2 text-[11px] font-bold text-white/90 drop-shadow">↑ jump</span>
+              <span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-[11px] font-bold text-white/90 drop-shadow">↓ slide</span>
+              {(() => {
+                const cap = 58;
+                const cy = Math.max(-cap, Math.min(cap, leftJoy.dy));
+                return <div className="absolute left-1/2 h-8 w-8 -translate-x-1/2 rounded-full bg-white shadow-lg" style={{ top: 70 + cy - 16 }} />;
+              })()}
+            </div>
+          )}
+
+          {/* Horizontal joystick (RIGHT side) — drag ◀ ▶ to change lane. */}
+          {rightJoy && (
+            <div
+              className="pointer-events-none absolute z-10"
+              style={{ left: rightJoy.x - 70, top: rightJoy.y - 40, width: 140, height: 80 }}
+            >
+              <div className="absolute inset-x-0 inset-y-1 rounded-full border-2 border-white/40 bg-white/10 backdrop-blur" />
+              <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[11px] font-bold text-white/90 drop-shadow">◀</span>
+              <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[11px] font-bold text-white/90 drop-shadow">▶</span>
+              {(() => {
+                const cap = 58;
+                const cx = Math.max(-cap, Math.min(cap, rightJoy.dx));
+                return <div className="absolute top-1/2 h-8 w-8 -translate-y-1/2 rounded-full bg-white shadow-lg" style={{ left: 70 + cx - 16 }} />;
+              })()}
+            </div>
+          )}
+
+          {/* Idle hint — only when neither joystick is active. */}
+          {!leftJoy && !rightJoy && (
+            <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/30 px-3 py-1.5 text-xs font-semibold text-white/90 backdrop-blur">
+              ← drag ↑↓ for jump/slide · drag ◀▶ on the right for lanes →
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Paused — scrollable in case landscape phone keyboard or browser chrome leaves no room. */}
+      {paused && !over && (
+        <div className="fixed inset-0 z-30 overflow-y-auto overscroll-contain bg-slate-900/70 text-white" style={scrollShellStyle}>
+          <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-4 px-6 py-6 text-center">
+            <div className="text-5xl">⏸️</div>
+            <h2 className="text-2xl font-black">Paused</h2>
+            <div className="flex gap-3">
+              <button type="button" onClick={() => togglePause(false)} className="rounded-full bg-emerald-500 px-6 py-3 text-lg font-bold text-white hover:bg-emerald-600">
+                ▶ Resume
+              </button>
+              <button type="button" onClick={toMenu} className="rounded-full bg-white/20 px-6 py-3 text-lg font-bold text-white hover:bg-white/30">
+                🏠 Menu
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* Game over */}
+      {/* Game over — same scroll pattern as the menu. */}
       {over && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-slate-900/70 text-center text-white">
-          <div className="text-5xl">{finalScore.newBest ? '🏆' : '🏁'}</div>
-          {finalScore.newBest ? (
-            <h2 className="text-3xl font-black text-amber-300">New best! 🎉</h2>
-          ) : (
-            <h2 className="text-2xl font-black">Nice run!</h2>
-          )}
-          <p>
-            🏃 {finalScore.distance}m · 💎 {finalScore.gems}
-          </p>
-          <p className="text-sm font-semibold text-amber-200">💨 Top speed: {Math.round(finalScore.topSpeed * 3.6)} km/h</p>
-          {!finalScore.newBest && best > 0 && <p className="text-sm text-white/70">Best: {best}m</p>}
-          <button
-            type="button"
-            onClick={playAgain}
-            className="rounded-full bg-emerald-500 px-6 py-3 text-lg font-bold text-white hover:bg-emerald-600"
-          >
-            Play again
-          </button>
+        <div className="fixed inset-0 z-30 overflow-y-auto overscroll-contain bg-slate-900/70 text-white" style={scrollShellStyle}>
+          <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-4 px-6 py-6 text-center">
+            <div className="text-5xl">{finalScore.newBest ? '🏆' : '🏁'}</div>
+            {finalScore.newBest ? (
+              <h2 className="text-3xl font-black text-amber-300">New best! 🎉</h2>
+            ) : (
+              <h2 className="text-2xl font-black">Nice run!</h2>
+            )}
+            <p>
+              🏃 {finalScore.distance}m · 💎 {finalScore.gems} · ⏱ {fmtTime(finalScore.durationSec)}
+            </p>
+            <p className="text-sm font-semibold text-amber-200">💨 Top speed: {Math.round(finalScore.topSpeed * 3.6)} km/h</p>
+            {!finalScore.newBest && best > 0 && (
+              <p className="text-sm text-white/70">
+                Best: {best}m{bestTime > 0 && <> · ⏱ {fmtTime(bestTime)}</>}
+              </p>
+            )}
+            <div className="mt-1 flex gap-3">
+              <button type="button" onClick={playAgain} className="rounded-full bg-emerald-500 px-6 py-3 text-lg font-bold text-white hover:bg-emerald-600">
+                ▶ Play again
+              </button>
+              <button type="button" onClick={toMenu} className="rounded-full bg-white/20 px-6 py-3 text-lg font-bold text-white hover:bg-white/30">
+                🏠 Menu
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

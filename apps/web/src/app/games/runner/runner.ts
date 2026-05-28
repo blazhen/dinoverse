@@ -36,10 +36,13 @@ export interface RunnerStats {
   speed: number; // current run speed in internal units/sec
   breakReady: boolean; // 💥 smash is off cooldown
   combo: number; // coin combo multiplier (1 = none)
+  lane: number; // 0/1/2 — exposed for multiplayer position broadcast
+  y: number; // vertical offset (0 = ground) — exposed for multiplayer
 }
 export interface RunnerCallbacks {
   onUpdate: (s: RunnerStats) => void;
-  onGameOver: (distance: number, gems: number) => void;
+  /** distance (m), gems, run duration in seconds (for "longest run" history) */
+  onGameOver: (distance: number, gems: number, durationSec: number) => void;
   onRune?: (rune: string) => void; // fired when a breakable is smashed (for the reward popup)
 }
 export type RunnerView = 'follow' | 'close';
@@ -49,6 +52,21 @@ export interface RunnerOptions {
   character?: DinoType;
   view?: RunnerView; // chosen BEFORE the run (fixed for the session — fair in multiplayer)
   sfx?: RunnerSfx; // sound hooks (jump/coin/smash/hit/rune/boost)
+  /** Seeded PRNG seed. If set, the track layout is deterministic — required for multiplayer
+   *  so every client builds the identical obstacle stream. Omit for solo (uses Math.random). */
+  seed?: number;
+}
+
+// Public shape used by the multiplayer leaderboard. The race wrapper hands these in via
+// `setOpponents`; the runner doesn't itself talk to the network.
+export interface RunnerOpponent {
+  id: string;
+  name: string;
+  character: DinoType;
+  distance: number;
+  lane: number;
+  y: number;
+  finished?: boolean;
 }
 export interface RunnerHandle {
   destroy: () => void;
@@ -57,11 +75,29 @@ export interface RunnerHandle {
   moveRight: () => void;
   jump: () => void;
   slide: () => void;
+  /** One smash press. Gold dies in one hit; a 📦 crate cracks on the first press and breaks
+   *  (→ JACKPOT) on the second — both must land before the crate scrolls past you. */
   breakBox: () => void;
   setPaused: (b: boolean) => void;
+  /** Multiplayer: hand in the latest opponent snapshots. The runner renders each as a
+   *  ghost dino positioned by (my_distance − their_distance) on the z axis. */
+  setOpponents: (ops: RunnerOpponent[]) => void;
 }
 
 type PowerType = 'shield' | 'magnet';
+
+// Mulberry32 — small fast PRNG. Same seed → identical sequence on every machine, which is how
+// we make sure all players in a multiplayer race see the exact same obstacle layout.
+function makeRng(seed: number) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
 // A camera-facing sprite of an emoji, drawn to a canvas — so kids recognize the power-up at a glance.
 function makeEmojiSpriteMaterial(emoji: string): THREE.SpriteMaterial {
@@ -104,11 +140,15 @@ function makeSpeedSpriteMaterial(km: number): THREE.SpriteMaterial {
 }
 
 export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: RunnerOptions = {}): RunnerHandle {
-  const START_SPEED = opts.startSpeed ?? 12;
-  const ACCEL = opts.accel ?? 0.6; // auto-accel climbs only to AUTO_CAP; ⚡ boosts go beyond
-  const AUTO_CAP = 100 / 3.6; // auto-speed climbs to 100 km/h; beyond that is earned via ⚡ boosts
+  const START_SPEED = opts.startSpeed ?? 11;
+  const ACCEL = opts.accel ?? 0.25; // gentle ramp — takes ~30s from default start to AUTO_CAP
+  const AUTO_CAP = 70 / 3.6; // auto-speed climbs to 70 km/h; ⚡ boosts can still push past
   const MIN_SPEED = 6; // floor after collision penalties (~22 km/h)
   const VIEW: RunnerView = opts.view ?? 'follow';
+  // Seeded RNG drives obstacle / pickup spawn so multiplayer clients share the same track.
+  // Local visuals (particles, camera shake, rune choice) keep Math.random — they don't need
+  // to match across clients.
+  const rng = opts.seed != null ? makeRng(opts.seed) : Math.random;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xbae6fd);
@@ -181,31 +221,37 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     lane: number;
     type: 'low' | 'high';
     shadow?: THREE.Mesh; // ground shadow under flying (high) boxes
+    bumped?: boolean; // a side-bump bounce already fired for this box (don't repeat)
   }
   interface Breakable {
     mesh: THREE.Mesh;
     shadow?: THREE.Mesh; // for flying (high) gold boxes
     shape: 'low' | 'high' | 'crate'; // gold low/high are avoidable; crate always blocks
-    halfW: number; // collision half-width (gold ~0.9 = 1 lane; crate ~1.9 = 2 lanes)
+    halfW: number; // collision half-width (gold ~1.1 = 1 lane; crate ~1.9 = 2 lanes)
     hp: number; // gold 1, crate 2
     resolved?: boolean;
+    bumped?: boolean; // a side-bump bounce already fired (don't repeat)
   }
   const obstacles: Ob[] = [];
   const gems: { mesh: THREE.Mesh; lane: number }[] = [];
   const powerups: { mesh: THREE.Sprite; lane: number; type: PowerType }[] = [];
   const speedups: { mesh: THREE.Sprite; shadow: THREE.Mesh; lane: number; amount: number }[] = []; // +km/h boosts (jump to grab)
   const breakables: Breakable[] = []; // 💥 to smash for a rune — gold (1 tap, 1 lane) or crate (2 taps, 2 lanes)
+  // Multiplayer ghost dinos — one entry per remote racer, keyed by their server-side id.
+  const ghosts = new Map<string, { dino: DinoCharacter; group: THREE.Group; nameSprite: THREE.Sprite; nameMat: THREE.SpriteMaterial }>();
+  let opponentsLatest: RunnerOpponent[] = [];
 
   let laneIndex = 1;
+  let lastLane = 1; // lane we came from (a side-bump bounces us back here)
   let velY = 0;
   let jumping = false;
   let grounded = true; // on the ground OR standing on a box
   let slideUntil = 0;
   let fastFalling = false; // airborne slide-press → drop fast to the ground
   let slideQueued = false; // a 2nd airborne press → slide once we land
-  let pendingSmash = false; // a queued 💥 press waiting to connect with a crate
+  let pendingSmash = false; // a queued 💥 press waiting to connect with a target
   let smashWindowUntil = 0; // how long that queued press stays live
-  let breakCooldownUntil = 0; // 2s cooldown after a successful break
+  let breakCooldownUntil = 0; // 3s cooldown after a successful break
   let attackUntil = 0; // play the smash animation until this time
   let comboCount = 0; // consecutive coins (for the multiplier)
   let comboUntil = 0; // the coin streak ends if none collected by this time
@@ -222,6 +268,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   let paused = false;
   let raf = 0;
   let lastHud = 0;
+  let runStartedAt = 0; // clock.elapsedTime at the start of THIS run (reset to "now" on restart)
   const clock = new THREE.Clock();
 
   const lowMat = new THREE.MeshStandardMaterial({ color: 0x9a3412 }); // brown = JUMP over (on the ground)
@@ -231,9 +278,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   const speedMats: Record<number, THREE.SpriteMaterial> = { 5: makeSpeedSpriteMaterial(5), 10: makeSpeedSpriteMaterial(10), 15: makeSpeedSpriteMaterial(15) };
   const shadowGeo = new THREE.CircleGeometry(0.32, 16); // ground shadow under flying boosts (height cue)
   const shadowMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22, depthWrite: false });
-  const boxShadowGeo = new THREE.PlaneGeometry(1.5, 1.0); // wider shadow under flying (high) boxes
-  const goldLowGeo = new THREE.BoxGeometry(1.5, 1.1, 1); // gold ground box (jump or smash)
-  const goldHighGeo = new THREE.BoxGeometry(1.7, 1, 1); // gold flying box (slide or smash)
+  const boxShadowGeo = new THREE.PlaneGeometry(2.0, 1.0); // wider shadow under flying (high) boxes
+  const goldLowGeo = new THREE.BoxGeometry(2.0, 1.1, 1); // gold ground box (jump or smash) — wide enough to fill the lane
+  const goldHighGeo = new THREE.BoxGeometry(2.0, 1, 1); // gold flying box (slide or smash)
   const goldMat = new THREE.MeshStandardMaterial({ color: 0xeab308, emissive: 0x713f12, emissiveIntensity: 0.25 }); // gold = 1-tap breakable
   const crateGeo = new THREE.BoxGeometry(3.6, 1.6, 1); // grey crate spans TWO lanes
   const crateMat = new THREE.MeshStandardMaterial({ color: 0x78716c }); // stone crate = 2-tap "double wall"
@@ -247,8 +294,8 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
 
   function spawnRow(z: number) {
     // Rare 2-lane stone-crate row: blocks two lanes (smash with two 💥 taps, or dodge to the free lane).
-    if (Math.random() < 0.06) {
-      const pair = Math.random() < 0.5 ? 0 : 1; // covers lanes {pair, pair+1}
+    if (rng() < 0.06) {
+      const pair = rng() < 0.5 ? 0 : 1; // covers lanes {pair, pair+1}
       const cx = (LANES[pair]! + LANES[pair + 1]!) / 2;
       const mesh = new THREE.Mesh(crateGeo, crateMat);
       mesh.position.set(cx, 0.8, z);
@@ -265,10 +312,10 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       gems.push({ mesh: gem, lane: openLane });
       return;
     }
-    const freeLane = Math.floor(Math.random() * 3);
+    const freeLane = Math.floor(rng() * 3);
     for (let l = 0; l < 3; l++) {
       if (l === freeLane) {
-        const roll = Math.random();
+        const roll = rng();
         if (roll < 0.04) {
           // Magnet only, and rare — the shield is now a rune you earn by smashing 📦 crates.
           const mesh = new THREE.Sprite(magnetIconMat);
@@ -284,14 +331,14 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         }
         continue;
       }
-      if (Math.random() < 0.55) {
-        const shape: 'low' | 'high' = Math.random() < 0.6 ? 'low' : 'high';
+      if (rng() < 0.55) {
+        const shape: 'low' | 'high' = rng() < 0.6 ? 'low' : 'high';
         const y = shape === 'low' ? 0.55 : HIGH_OBSTACLE_Y;
-        if (Math.random() < 0.25) {
+        if (rng() < 0.25) {
           // GOLD breakable — same shape as a normal box, smashable for a rune (1 tap); still jump/slide-able.
           const mesh = new THREE.Mesh(shape === 'low' ? goldLowGeo : goldHighGeo, goldMat);
           mesh.position.set(LANES[l]!, y, z);
-          const bk: Breakable = { mesh, shape, halfW: 0.9, hp: 1 };
+          const bk: Breakable = { mesh, shape, halfW: 1.1, hp: 1 };
           if (shape === 'high') {
             const shadow = new THREE.Mesh(boxShadowGeo, shadowMat);
             shadow.rotation.x = -Math.PI / 2;
@@ -304,8 +351,8 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         } else {
           const mesh =
             shape === 'low'
-              ? new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.1, 1), lowMat)
-              : new THREE.Mesh(new THREE.BoxGeometry(1.7, 1, 1), highMat);
+              ? new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.1, 1), lowMat)
+              : new THREE.Mesh(new THREE.BoxGeometry(2.0, 1, 1), highMat);
           mesh.position.set(LANES[l]!, y, z);
           const ob: Ob = { mesh, lane: l, type: shape };
           if (shape === 'high') {
@@ -321,11 +368,11 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       }
     }
     // Rare speed boost — a jump-height ⚡ icon; bigger boosts spawn higher (harder to reach).
-    if (Math.random() < 0.08) {
-      const r = Math.random();
+    if (rng() < 0.08) {
+      const r = rng();
       const amount = r < 0.6 ? 5 : r < 0.9 ? 10 : 15; // +5 common, +10 uncommon, +15 rare
       const y = amount === 5 ? 1.6 : amount === 10 ? 2.2 : 2.9;
-      const lane = Math.floor(Math.random() * 3);
+      const lane = Math.floor(rng() * 3);
       const mesh = new THREE.Sprite(speedMats[amount]!);
       mesh.scale.set(0.85, 0.85, 0.85);
       mesh.position.set(LANES[lane]!, y, z);
@@ -366,6 +413,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     for (const s of speedups) scene.remove(s.mesh, s.shadow);
     speedups.length = 0;
     laneIndex = 1;
+    lastLane = 1;
     velY = 0;
     jumping = false;
     grounded = true;
@@ -384,6 +432,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     invulnUntil = 0;
     lastSpawn = 0;
     over = false;
+    runStartedAt = clock.elapsedTime; // reset the run timer so duration starts at 0
     player.position.set(0, 0, 0);
     player.visible = true;
     shieldBubble.visible = false;
@@ -405,6 +454,8 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       speed,
       breakReady: clock.elapsedTime >= breakCooldownUntil,
       combo: comboMult(),
+      lane: laneIndex,
+      y: player.position.y,
     });
   }
 
@@ -443,11 +494,11 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     if (hearts <= 0) {
       over = true;
       dino.play('death');
-      cb.onGameOver(Math.floor(distance), gemCount);
+      cb.onGameOver(Math.floor(distance), gemCount, clock.elapsedTime - runStartedAt);
     }
   }
 
-  // A random reward for smashing a breakable; returns a label for the on-screen popup.
+  // A random reward for smashing a gold breakable; returns a label for the on-screen popup.
   function grantRune(): string {
     opts.sfx?.rune?.();
     const r = Math.floor(Math.random() * 5);
@@ -472,6 +523,20 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     return label;
   }
 
+  // JACKPOT — the reward for a charged smash on a 📦 crate. Stacks every gold rune at once
+  // so a successful charge feels like a slot-machine win.
+  function grantJackpot(): string {
+    opts.sfx?.rune?.();
+    opts.sfx?.boost?.();
+    shieldActive = true;
+    magnetUntil = clock.elapsedTime + 8;
+    hearts = Math.min(5, hearts + 1);
+    gemCount += 25;
+    speed += 8 / 3.6;
+    emit();
+    return '🎰 JACKPOT';
+  }
+
   // The top surface the player can stand on right now (a box under them), else 0 (the ground).
   // `prevY` (last frame's feet height) gates it so you only land coming DOWN onto a box — you
   // never pop up onto one you ran into from the side.
@@ -481,7 +546,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     // Only LOW (ground) boxes are standable — flying bars and tall crates are not platforms.
     for (const o of obstacles) {
       if (o.type !== 'low') continue;
-      if (Math.abs(o.mesh.position.z) < 0.9 && Math.abs(o.mesh.position.x - px) < 0.7 && prevY >= 1.0) g = Math.max(g, 1.1);
+      if (Math.abs(o.mesh.position.z) < 0.9 && Math.abs(o.mesh.position.x - px) < 0.9 && prevY >= 1.0) g = Math.max(g, 1.1);
     }
     for (const b of breakables) {
       if (b.resolved || b.shape !== 'low') continue;
@@ -504,7 +569,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     }
     const t = clock.elapsedTime;
 
-    if (speed < AUTO_CAP) speed = Math.min(speed + dt * ACCEL, AUTO_CAP); // auto only to 100 km/h
+    if (speed < AUTO_CAP) speed = Math.min(speed + dt * ACCEL, AUTO_CAP); // auto only to AUTO_CAP
     distance += speed * dt;
     const dz = speed * dt;
 
@@ -570,6 +635,78 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     }
     if (comboCount > 0 && t > comboUntil) comboCount = 0; // streak timed out
 
+    // ── Multiplayer ghosts ────────────────────────────────────────────────
+    // Position each remote racer at (their_distance − my_distance) on the z axis: positive z
+    // = behind me (visible going away in -z direction the world flows), negative z = ahead.
+    // Cull anyone too far away (the dino mesh would be specks at >50m gaps anyway).
+    if (ghosts.size > 0 || opponentsLatest.length > 0) {
+      const seen = new Set<string>();
+      for (const op of opponentsLatest) {
+        seen.add(op.id);
+        let g = ghosts.get(op.id);
+        if (!g) {
+          const dino = new DinoCharacter({ type: op.character, hostControlsHeight: true });
+          dino.root.scale.setScalar(DINO_SCALE);
+          dino.root.position.y = DINO_FOOT_LIFT;
+          dino.root.rotation.y = Math.PI;
+          // Tint the ghost slightly translucent so it reads as "remote".
+          dino.root.traverse((node) => {
+            const mesh = node as THREE.Mesh;
+            if (mesh.isMesh && mesh.material) {
+              const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+              for (const m of mats) {
+                (m as THREE.Material).transparent = true;
+                (m as THREE.Material & { opacity: number }).opacity = 0.75;
+              }
+            }
+          });
+          const group = new THREE.Group();
+          group.add(dino.root);
+          // Floating name label above the ghost.
+          const size = 256;
+          const canvas = document.createElement('canvas');
+          canvas.width = size; canvas.height = 64;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.font = 'bold 36px system-ui, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.lineWidth = 6;
+            ctx.strokeStyle = '#0f172a';
+            ctx.fillStyle = '#fef3c7';
+            ctx.strokeText(op.name, size / 2, 32);
+            ctx.fillText(op.name, size / 2, 32);
+          }
+          const tex = new THREE.CanvasTexture(canvas);
+          tex.colorSpace = THREE.SRGBColorSpace;
+          const nameMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
+          const nameSprite = new THREE.Sprite(nameMat);
+          nameSprite.scale.set(1.6, 0.4, 1);
+          nameSprite.position.set(0, 1.7, 0);
+          group.add(nameSprite);
+          scene.add(group);
+          g = { dino, group, nameSprite, nameMat };
+          ghosts.set(op.id, g);
+        }
+        const dz2 = op.distance - distance; // their distance minus mine
+        const lane = Math.min(2, Math.max(0, op.lane | 0));
+        g.group.position.set(LANES[lane]!, op.y, -dz2); // ahead of me = negative z (further into the screen)
+        g.group.visible = !op.finished && Math.abs(dz2) < 50;
+        g.dino.play(op.y > 0.4 ? 'jump' : 'run');
+        g.dino.update(dt);
+      }
+      // Remove ghosts whose owner has left the room.
+      for (const [id, g] of ghosts) {
+        if (!seen.has(id)) {
+          scene.remove(g.group);
+          g.dino.dispose();
+          g.nameMat.map?.dispose();
+          g.nameMat.dispose();
+          ghosts.delete(id);
+        }
+      }
+    }
+
     for (const o of obstacles) {
       o.mesh.position.z += dz;
       if (o.shadow) o.shadow.position.z = o.mesh.position.z;
@@ -607,11 +744,22 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         obstacles.splice(i, 1);
         continue;
       }
-      // Your body physically overlaps the box at the player plane → hit (unless you cleared it
-      // vertically). No "settled" gate, so you can't slip through by switching lanes fast.
-      if (Math.abs(o.mesh.position.z) < 0.8 + dz && Math.abs(o.mesh.position.x - player.position.x) < 0.9) {
-        if (o.type === 'low' && player.position.y < 1.0) hit(); // jump over or land on top
-        else if (o.type === 'high' && !sliding) hit(); // flying bar: must SLIDE under — no jumping over
+      // Three outcomes on box contact:
+      //   1. Vertically cleared (jumped low / sliding under high / standing on a low box) → nothing.
+      //   2. Settled head-on (squarely in its lane) → full hit (heart + big speed loss).
+      //   3. Side bump (mid-transition, brushed its side) → bounce back to lastLane + small speed loss, NO heart.
+      // The bounce itself stops phasing — each bump shoves you back, so you can't oscillate through.
+      if (Math.abs(o.mesh.position.z) < 0.8 + dz && Math.abs(o.mesh.position.x - player.position.x) < 1.1) {
+        const cleared = (o.type === 'low' && player.position.y >= 1.0) || (o.type === 'high' && sliding);
+        if (!cleared) {
+          const settled = Math.abs(player.position.x - LANES[laneIndex]!) < 0.35;
+          if (settled) hit();
+          else if (!o.bumped) {
+            o.bumped = true;
+            speed = Math.max(MIN_SPEED, speed / 1.1);
+            laneIndex = lastLane;
+          }
+        }
       }
     }
     for (let i = breakables.length - 1; i >= 0; i--) {
@@ -623,33 +771,48 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       }
       const bz = b.mesh.position.z;
       const aligned = Math.abs(b.mesh.position.x - player.position.x) < b.halfW;
-      // Smash while it's approaching/at you — one hit per 💥 press (a crate needs two).
+      // Smash while it's approaching/at you — one HP per press. Gold = 1 HP (dies in one),
+      // 📦 crate = 2 HP (cracks on the first tap, breaks on the second → JACKPOT).
       // Flying (high) boxes can only be smashed mid-jump — you must be in the air to reach them.
       const canSmash = b.shape !== 'high' || player.position.y >= 1.0;
+      let crackedNow = false;
       if (!b.resolved && pendingSmash && canSmash && t < smashWindowUntil && aligned && bz < 0.9 && bz > -3) {
         pendingSmash = false;
         b.hp -= 1;
         if (b.hp <= 0) {
           b.resolved = true;
-          burst(b.mesh.position.x, 1.0, b.mesh.position.z, debrisPMat, 8, 4, 2);
+          const isCrate = b.shape === 'crate';
+          burst(b.mesh.position.x, 1.0, b.mesh.position.z, debrisPMat, isCrate ? 18 : 8, isCrate ? 6 : 4, isCrate ? 3 : 2);
           scene.remove(b.mesh);
           if (b.shadow) scene.remove(b.shadow);
           breakables.splice(i, 1);
           opts.sfx?.smash?.();
-          cb.onRune?.(grantRune());
+          cb.onRune?.(isCrate ? grantJackpot() : grantRune());
           breakCooldownUntil = t + 3; // 3s cooldown after a successful break
           continue;
         }
-        b.mesh.scale.multiplyScalar(0.82); // cracked — one wall down
+        crackedNow = true;
+        b.mesh.scale.multiplyScalar(0.86); // cracked — visual feedback that the 2nd tap is queued
+        opts.sfx?.smash?.();
       }
-      // Passes unbroken: gold can be jumped (low) / slid under (high); a crate always blocks.
-      // Upper bound widens with speed so a fast box can't skip the window in one frame.
-      if (!b.resolved && bz >= 0.9 && bz < 1.8 + dz && aligned) {
-        b.resolved = true;
-        const avoided =
-          (b.shape === 'low' && player.position.y >= 1.0) || // jump over / stand on a ground box
-          (b.shape === 'high' && sliding); // flying box: SLIDE under (or smash mid-jump). Crate: smash/dodge only.
-        if (!avoided) hit();
+      // Hit/bump fires AFTER it passes you (bz >= 0.5) — clean of the smash window. crackedNow
+      // defers a same-frame hit so a quick 2nd tap can finish a freshly-cracked crate before
+      // collision logic counts it as a head-on hit.
+      if (!b.resolved && !crackedNow && bz >= 0.5 && bz < 1.8 + dz && aligned) {
+        const cleared =
+          (b.shape === 'low' && player.position.y >= 1.0) ||
+          (b.shape === 'high' && sliding); // crate has no vertical clear
+        if (!cleared) {
+          const settled = Math.abs(player.position.x - LANES[laneIndex]!) < 0.35;
+          if (settled) {
+            b.resolved = true;
+            hit();
+          } else if (!b.bumped) {
+            b.bumped = true;
+            speed = Math.max(MIN_SPEED, speed / 1.1);
+            laneIndex = lastLane;
+          }
+        }
       }
     }
     for (let i = gems.length - 1; i >= 0; i--) {
@@ -732,10 +895,20 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   }
 
   const moveLeft = () => {
-    if (!over) laneIndex = Math.max(0, laneIndex - 1);
+    if (over) return;
+    const next = Math.max(0, laneIndex - 1);
+    if (next !== laneIndex) {
+      lastLane = laneIndex;
+      laneIndex = next;
+    }
   };
   const moveRight = () => {
-    if (!over) laneIndex = Math.min(2, laneIndex + 1);
+    if (over) return;
+    const next = Math.min(2, laneIndex + 1);
+    if (next !== laneIndex) {
+      lastLane = laneIndex;
+      laneIndex = next;
+    }
   };
   const jump = () => {
     if (!over && grounded && !jumping) {
@@ -748,9 +921,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   const slide = () => {
     if (over) return;
     if (jumping || player.position.y > 0.001) {
-      // Airborne: first press = drop fast to the ground (no slide); a 2nd press = slide on landing.
-      if (fastFalling) slideQueued = true;
+      // Airborne: drop fast AND slide on landing — a single press triggers both.
       fastFalling = true;
+      slideQueued = true;
       if (velY > -38) velY = -38;
     } else {
       slideUntil = clock.elapsedTime + 0.6;
@@ -771,34 +944,12 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') moveRight();
     else if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') jump();
     else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') slide();
-    else if (e.key === 'e' || e.key === 'E') breakBox();
+    else if ((e.key === 'e' || e.key === 'E') && !e.repeat) breakBox();
   };
   window.addEventListener('keydown', onKey);
 
-  let tsx = 0;
-  let tsy = 0;
-  const onTouchStart = (e: TouchEvent) => {
-    tsx = e.changedTouches[0]!.clientX;
-    tsy = e.changedTouches[0]!.clientY;
-  };
-  const onTouchEnd = (e: TouchEvent) => {
-    const dx = e.changedTouches[0]!.clientX - tsx;
-    const dy = e.changedTouches[0]!.clientY - tsy;
-    if (Math.abs(dx) < 24 && Math.abs(dy) < 24) {
-      jump();
-      return;
-    }
-    if (Math.abs(dx) > Math.abs(dy)) {
-      if (dx > 0) moveRight();
-      else moveLeft();
-    } else if (dy > 0) {
-      slide();
-    } else {
-      jump();
-    }
-  };
-  parent.addEventListener('touchstart', onTouchStart, { passive: true });
-  parent.addEventListener('touchend', onTouchEnd, { passive: true });
+  // Touch input is handled by RunnerCanvas (virtual joystick on mobile, buttons on desktop) so
+  // tap-anywhere-to-jump doesn't fire by accident.
 
   const ro = new ResizeObserver(() => {
     const w = parent.clientWidth;
@@ -816,9 +967,14 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     destroy() {
       cancelAnimationFrame(raf);
       window.removeEventListener('keydown', onKey);
-      parent.removeEventListener('touchstart', onTouchStart);
-      parent.removeEventListener('touchend', onTouchEnd);
       ro.disconnect();
+      for (const g of ghosts.values()) {
+        scene.remove(g.group);
+        g.dino.dispose();
+        g.nameMat.map?.dispose();
+        g.nameMat.dispose();
+      }
+      ghosts.clear();
       dino.dispose();
       magnetIconMat.map?.dispose();
       magnetIconMat.dispose();
@@ -856,6 +1012,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     breakBox,
     setPaused(b: boolean) {
       paused = b;
+    },
+    setOpponents(ops: RunnerOpponent[]) {
+      opponentsLatest = ops;
     },
   };
 }

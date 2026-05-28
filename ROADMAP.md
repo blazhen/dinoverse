@@ -152,9 +152,10 @@ Sole priority until it ships. Everything else (2D platformer core, hub, quizzes,
 > **friendly Mario-Kart-style items** (bubble/goo/boost — no combat, no elimination). Cross-age via
 > auto-run + steering assist for 5–7. See GAME_DESIGN.md "Multiplayer".
 
-- [ ] Real-time room/state server (Colyseus on Railway) — authoritative state, client prediction
-- [ ] **Friends-only invite-code rooms** (NO random matchmaking with strangers); room lifecycle + reconnect
-- [ ] Dino Dash multiplayer race: position sync, shared track, finish/ranking
+- [x] Real-time room/state server (Colyseus, `apps/server`) — authoritative state for ready/phase/finish.
+- [x] **Friends-only invite-code rooms** (`joinOrCreate('race', { code })` + `filterBy(['code'])`) — host generates a 4-letter code, friends join with it.
+- [x] Dino Dash multiplayer race M1: seeded shared track (mulberry32), 10Hz position sync, ghost dinos with name labels, live leaderboard. **Done = friends on the same WiFi can race; see [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md) for the run-it-locally steps.**
+- [ ] M2: in-canvas 3-2-1 countdown, finish line (distance goal + placement), mid-race rejoin, deployed server (Railway) so play works across the internet.
 - [ ] Shared-track pickups regenerate after collection so trailing players can grab them too —
       ⚡ speed boosts ~1s, 💎 coins ~3s. Server-authoritative (no single-player equivalent).
 - [ ] **Magnet = a "pull the pack together" item** (revised 2026-05-28): on pickup it still vacuums

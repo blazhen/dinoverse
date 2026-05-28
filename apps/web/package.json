@@ -10,10 +10,12 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@colyseus/schema": "^3.0.0",
     "@dinoverse/db": "workspace:*",
     "@dinoverse/types": "workspace:*",
     "@dinoverse/ui": "workspace:*",
     "better-auth": "^1.2.7",
+    "colyseus.js": "^0.16.0",
     "next": "^15.1.6",
     "phaser": "^3.88.2",
     "resend": "^4.0.1",
