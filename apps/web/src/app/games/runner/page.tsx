@@ -2,7 +2,32 @@ import Link from 'next/link';
 
 import { RunnerCanvas } from './runner-canvas';
 
-export const metadata = { title: 'Dino Dash' };
+// iOS Safari (iPhone) refuses the element-fullscreen API. The next-best thing is the
+// PWA "Add to Home Screen" hatch — these meta tags tell iOS that when the page is
+// launched from the home-screen icon, it should open in a chromeless standalone window
+// (effectively fullscreen). Android Chrome / Edge / Firefox already get real
+// fullscreen via the ⛶ button (see toggleFullscreen in runner-canvas.tsx).
+export const metadata = {
+  title: 'Dino Dash',
+  viewport: {
+    width: 'device-width',
+    initialScale: 1,
+    minimumScale: 1,
+    maximumScale: 1,
+    userScalable: false,
+    viewportFit: 'cover',
+  },
+  appleWebApp: {
+    capable: true,
+    title: 'Dino Dash',
+    statusBarStyle: 'black-translucent',
+  },
+  other: {
+    'mobile-web-app-capable': 'yes',
+    'apple-mobile-web-app-capable': 'yes',
+    'apple-mobile-web-app-status-bar-style': 'black-translucent',
+  },
+} as const;
 
 export default function RunnerPage() {
   return (
@@ -20,7 +45,7 @@ export default function RunnerPage() {
         </div>
         <p className="text-xs text-slate-300">
           <span className="font-semibold">←/→</span> switch lane · <span className="font-semibold">↑/Space</span>{' '}
-          jump · <span className="font-semibold">↓</span> slide · <span className="font-semibold">E</span> smash (📦 = 2 fast taps) · <span className="font-semibold">P</span> pause
+          jump · <span className="font-semibold">↓</span> slide · <span className="font-semibold">E</span> smash (📦 = 2 taps) · <span className="font-semibold">Q</span> ⚡ ability · <span className="font-semibold">P</span> pause
         </p>
       </header>
 
@@ -29,7 +54,7 @@ export default function RunnerPage() {
       </div>
 
       <p className="hidden px-4 py-1.5 text-center text-xs text-slate-400 lg:block">
-        Jump 🟫, slide under 🟦, grab 💎, and smash 🟨 boxes (💥) for a rune. 📦 crates need <b>two fast taps</b> → 🎰 JACKPOT!
+        Jump 🟫, slide under 🟦, grab 💎, tap to smash 🟨 (📦 needs two). Coins + smashes charge your ⚡ ability — your dino’s signature move when full.
       </p>
     </main>
   );

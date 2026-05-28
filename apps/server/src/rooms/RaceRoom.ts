@@ -130,6 +130,79 @@ export class RaceRoom extends Room<RaceState> {
       p.place = [...this.state.players.values()].filter((x) => x.finished).length;
       if ([...this.state.players.values()].every((x) => x.finished)) this.state.phase = 'finished';
     });
+
+    // PvP abilities. Sender's client only invokes this once their on-screen charge is
+    // full (one Ability Box = one cast). The server picks the target(s) and broadcasts
+    // an 'ability' event to all clients — each client filters by id and applies the
+    // effect locally. Schema isn't authoritative for these effects (we just relay).
+    //
+    // Kinds:
+    //  'pull'    — Trik. Single target. Yank-back + counts as a hit on them (-1 heart).
+    //  'freeze'  — Stego. Single target. 2s no-move.
+    //  'thunder' — Brachio. AoE on every rival ahead of caster. 1.5s stun + speed cut.
+    //
+    // Target selection (single-target): pick from rivals AHEAD of the caster, weighted
+    // toward the leader so catching up feels rewarding without being deterministic.
+    this.onMessage('ability', (client, msg: { kind?: string }) => {
+      if (this.state.phase !== 'racing') return;
+      const me = this.state.players.get(client.sessionId);
+      if (!me || me.finished) return;
+      const kind = msg?.kind;
+      if (kind !== 'pull' && kind !== 'freeze' && kind !== 'thunder') return;
+      // Collect rivals AHEAD of caster (within 60m so it feels like a "shot," not a missile).
+      const ahead: PlayerState[] = [];
+      this.state.players.forEach((p) => {
+        if (p.id === client.sessionId || p.finished) return;
+        const gap = p.distance - me.distance; // positive = ahead
+        if (gap > 0 && gap < 60) ahead.push(p);
+      });
+      if (ahead.length === 0) {
+        this.broadcast('ability', { kind, casterId: me.id, targetIds: [] });
+        return;
+      }
+      let targetIds: string[];
+      if (kind === 'thunder') {
+        // AoE — hit ALL rivals ahead.
+        targetIds = ahead.map((p) => p.id);
+      } else {
+        // Single target. Two-tier selection:
+        //  1. If anyone is "visible" (within ~25m ahead — roughly what fits on screen),
+        //     they get hit deterministically — closest visible rival.
+        //  2. Otherwise the rival is off-screen → weighted-random among all rivals ahead,
+        //     weighted toward the leader so catching up is rewarded.
+        const VISIBLE_RANGE = 25;
+        const visible = ahead.filter((p) => p.distance - me.distance < VISIBLE_RANGE);
+        let chosen: PlayerState;
+        if (visible.length > 0) {
+          visible.sort((a, b) => a.distance - b.distance); // nearest visible first
+          chosen = visible[0]!;
+        } else {
+          // Sort by distance desc → leader at [0]. Weight = N, N-1, ...
+          ahead.sort((a, b) => b.distance - a.distance);
+          let total = 0;
+          const weights = ahead.map((_, i) => {
+            const w = ahead.length - i;
+            total += w;
+            return w;
+          });
+          let pick = Math.random() * total;
+          chosen = ahead[0]!;
+          for (let i = 0; i < ahead.length; i++) {
+            pick -= weights[i]!;
+            if (pick <= 0) {
+              chosen = ahead[i]!;
+              break;
+            }
+          }
+        }
+        targetIds = [chosen.id];
+        if (kind === 'pull') {
+          // Authoritative heart loss; target's client sees it via state sync.
+          chosen.hearts = Math.max(0, chosen.hearts - 1);
+        }
+      }
+      this.broadcast('ability', { kind, casterId: me.id, targetIds });
+    });
   }
 
   onJoin(client: Client, options: JoinOptions) {

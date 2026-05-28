@@ -35,10 +35,23 @@ export interface MpState {
   myId: string;
 }
 
+/** Server-relayed PvP ability event. The server resolves targets (nearest-ahead
+ *  weighted-random, or AoE for thunder) and broadcasts to everyone so each client can
+ *  filter for self/caster and play the appropriate visual + effect. */
+export type AbilityKind = 'pull' | 'freeze' | 'thunder';
+export interface AbilityEvent {
+  kind: AbilityKind;
+  casterId: string;
+  targetIds: string[]; // empty if the cast fizzled (no rivals in front of caster)
+}
+
 export interface MpCallbacks {
   onState: (s: MpState) => void;
   onError?: (msg: string) => void;
   onLeave?: () => void;
+  /** Broadcast from the server whenever any player fires an ability. Receivers filter
+   *  on `casterId === myId` (cast visual) and `targetIds.includes(myId)` (apply effect). */
+  onAbility?: (e: AbilityEvent) => void;
 }
 
 // Server-schema shape — we don't import @colyseus/schema types directly to keep the runtime
@@ -137,6 +150,12 @@ export class Multiplayer {
     room.onStateChange((s) => cb.onState(snapshot(s, room.sessionId)));
     room.onLeave(() => cb.onLeave?.());
     room.onError((code, msg) => cb.onError?.(msg ?? `room error ${code}`));
+    room.onMessage('ability', (e: AbilityEvent) => cb.onAbility?.(e));
+  }
+
+  /** Fire a PvP ability. The server picks the target(s) and relays via `onAbility`. */
+  ability(kind: AbilityKind) {
+    this.room?.send('ability', { kind });
   }
 
   ready(r: boolean) {

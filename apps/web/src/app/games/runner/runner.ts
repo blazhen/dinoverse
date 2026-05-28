@@ -34,10 +34,13 @@ export interface RunnerStats {
   shield: boolean;
   magnet: boolean;
   speed: number; // current run speed in internal units/sec
-  breakReady: boolean; // 💥 smash is off cooldown
+  breakReady: boolean; // legacy: now always true (smash has no cooldown)
   combo: number; // coin combo multiplier (1 = none)
   lane: number; // 0/1/2 — exposed for multiplayer position broadcast
   y: number; // vertical offset (0 = ground) — exposed for multiplayer
+  /** Ability charge 0..1. Fills from collecting gems + smashing boxes; at 1.0 the
+   *  ⚡ ability button is ready. Using the ability resets to 0. */
+  abilityCharge: number;
 }
 export interface RunnerCallbacks {
   onUpdate: (s: RunnerStats) => void;
@@ -78,6 +81,16 @@ export interface RunnerHandle {
   /** One smash press. Gold dies in one hit; a 📦 crate cracks on the first press and breaks
    *  (→ JACKPOT) on the second — both must land before the crate scrolls past you. */
   breakBox: () => void;
+  /** Fire the per-dino ability if charge is full (otherwise a no-op). Solo: applies the
+   *  local effect. Multiplayer: the canvas sends the ability to the server and calls
+   *  `consumeAbilityCharge` instead, so this isn't invoked. */
+  useAbility: () => void;
+  /** MP: burn the on-screen ⚡ charge without firing the local effect. */
+  consumeAbilityCharge: () => void;
+  /** MP receiver effects (called by the canvas when an opponent fires on us). */
+  applyFreeze: (durationMs: number) => void;
+  applyStun: (durationMs: number) => void;
+  applyHit: () => void;
   setPaused: (b: boolean) => void;
   /** Multiplayer: hand in the latest opponent snapshots. The runner renders each as a
    *  ghost dino positioned by (my_distance − their_distance) on the z axis. */
@@ -160,7 +173,10 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   // slower at the same km/h). Widening the FOV in portrait shrinks the dino, exposes more
   // of the track ahead, and brings back the peripheral motion cues that read as "speed".
   const LANDSCAPE_FOV = 62;
-  const PORTRAIT_FOV = 78;
+  // Portrait gets noticeably wider — perceived speed is dominated by peripheral motion,
+  // and a tall-narrow viewport robs the eye of those cues. 84° pushes obstacles past the
+  // camera with the same angular velocity the landscape view has at 62°.
+  const PORTRAIT_FOV = 84;
   const camera = new THREE.PerspectiveCamera(LANDSCAPE_FOV, parent.clientWidth / parent.clientHeight || 1.6, 0.1, 200);
   const syncCameraFov = () => {
     camera.fov = camera.aspect < 1 ? PORTRAIT_FOV : LANDSCAPE_FOV;
@@ -268,6 +284,10 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   const powerups: { mesh: THREE.Sprite; lane: number; type: PowerType }[] = [];
   const speedups: { mesh: THREE.Sprite; shadow: THREE.Mesh; lane: number; amount: number }[] = []; // +km/h boosts (jump to grab)
   const breakables: Breakable[] = []; // 💥 to smash for a rune — gold (1 tap, 1 lane) or crate (2 taps, 2 lanes)
+  // Ability box — purple-glowing one-tap box. Breaking it fully charges the ⚡ ability.
+  // Spawns more rarely than gold so a cast feels earned. Doesn't grant a rune; the ability
+  // IS the reward.
+  const abilityBoxes: { mesh: THREE.Mesh; lane: number }[] = [];
   // Multiplayer ghost dinos — one entry per remote racer, keyed by their server-side id.
   // `freshlySpawned` flips false after the first frame so we snap to position on creation
   // but interpolate every frame after, eliminating the 10Hz network-update jitter.
@@ -286,6 +306,15 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   let smashWindowUntil = 0; // how long that queued press stays live
   let breakCooldownUntil = 0; // 3s cooldown after a successful break
   let attackUntil = 0; // play the smash animation until this time
+  // Ability charge 0..ABILITY_FULL. Only filled by collecting an Ability Box (1-tap).
+  // After firing, it resets to 0 — and a new box must be broken to charge again.
+  let abilityCharge = 0;
+  const ABILITY_FULL = 100;
+  // PvP receiver state — set by applyFreeze / applyStun (called from the canvas in MP).
+  // While `frozenUntilLocal` is in the future, lane / jump / slide / smash inputs are
+  // ignored. `stunSpeedCapUntilLocal` caps the runner to MIN_SPEED for a brief window.
+  let frozenUntilLocal = 0;
+  let stunSpeedCapUntilLocal = 0;
   let comboCount = 0; // consecutive coins (for the multiplier)
   let comboUntil = 0; // the coin streak ends if none collected by this time
   let shakeUntil = 0; // camera shakes until this time (on hit)
@@ -318,6 +347,15 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   const crateGeo = new THREE.BoxGeometry(3.6, 1.6, 1); // grey crate spans TWO lanes
   const crateMat = new THREE.MeshStandardMaterial({ color: 0x78716c }); // stone crate = 2-tap "double wall"
   const crateIconMat = makeEmojiSpriteMaterial('📦'); // marks the tough crate
+  // Ability box — purple-glowing cube with a ⚡ icon. Visually distinct from gold/crate
+  // so kids instantly read "this is the special one".
+  const abilityBoxGeo = new THREE.BoxGeometry(1.2, 1.2, 1.2);
+  const abilityBoxMat = new THREE.MeshStandardMaterial({
+    color: 0xa855f7,
+    emissive: 0x7c3aed,
+    emissiveIntensity: 0.5,
+  });
+  const abilityBoxIconMat = makeEmojiSpriteMaterial('⚡');
   // Juice: little particles for coins / smashes / landings.
   const particleGeo = new THREE.BoxGeometry(0.12, 0.12, 0.12);
   const coinPMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8 });
@@ -415,6 +453,18 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       scene.add(mesh, shadow);
       speedups.push({ mesh, shadow, lane, amount });
     }
+    // Rare Ability Box — 1-tap smash → full ⚡ charge. ~4% per row so they're a treat.
+    if (rng() < 0.04) {
+      const lane = Math.floor(rng() * 3);
+      const mesh = new THREE.Mesh(abilityBoxGeo, abilityBoxMat);
+      mesh.position.set(LANES[lane]!, 0.7, z);
+      const icon = new THREE.Sprite(abilityBoxIconMat);
+      icon.scale.set(0.7, 0.7, 0.7);
+      icon.position.set(0, 1.0, 0);
+      mesh.add(icon);
+      scene.add(mesh);
+      abilityBoxes.push({ mesh, lane });
+    }
   }
 
   function reset() {
@@ -433,6 +483,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     comboCount = 0;
     comboUntil = 0;
     shakeUntil = 0;
+    abilityCharge = 0;
+    frozenUntilLocal = 0;
+    stunSpeedCapUntilLocal = 0;
     // Snap scenery back to the first biome (grassland).
     (scene.background as THREE.Color).copy(BIOMES[0]!.sky);
     scene.fog!.color.copy(BIOMES[0]!.fog);
@@ -445,6 +498,8 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     powerups.length = 0;
     for (const s of speedups) scene.remove(s.mesh, s.shadow);
     speedups.length = 0;
+    for (const a of abilityBoxes) scene.remove(a.mesh);
+    abilityBoxes.length = 0;
     laneIndex = 1;
     lastLane = 1;
     velY = 0;
@@ -489,6 +544,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       combo: comboMult(),
       lane: laneIndex,
       y: player.position.y,
+      abilityCharge: Math.min(1, abilityCharge / ABILITY_FULL),
     });
   }
 
@@ -603,6 +659,11 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     const t = clock.elapsedTime;
 
     if (speed < AUTO_CAP) speed = Math.min(speed + dt * ACCEL, AUTO_CAP); // auto only to AUTO_CAP
+    // PvP stun (Brachio Thunder) — hard-cap speed for the stun window so the auto-accel
+    // can't immediately undo the slowdown.
+    if (t < stunSpeedCapUntilLocal) speed = Math.min(speed, MIN_SPEED + 1);
+    // PvP freeze — also clamps speed (a frozen runner shouldn't accelerate either).
+    if (isFrozen()) speed = Math.min(speed, MIN_SPEED);
 
     // Multiplayer same-lane catch-up drag. If a ghost dino is just ahead of me in MY lane,
     // bleed speed so I don't visually phase through them. They naturally pull ahead (or I
@@ -782,6 +843,10 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       p.mesh.position.z += dz;
       p.mesh.rotation.y += dt * 3;
     }
+    for (const a of abilityBoxes) {
+      a.mesh.position.z += dz;
+      a.mesh.rotation.y += dt * 2; // gentle spin so the eye catches it
+    }
     for (const t2 of decos) {
       t2.position.z += dz;
       if (t2.position.z > 12) t2.position.z -= 22 * 11;
@@ -850,7 +915,8 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
           breakables.splice(i, 1);
           opts.sfx?.smash?.();
           cb.onRune?.(isCrate ? grantJackpot() : grantRune());
-          breakCooldownUntil = t + 3; // 3s cooldown after a successful break
+          // (Smashes no longer charge ⚡ — only the Ability Box does.)
+          breakCooldownUntil = t; // keep variable in sync without gating anything
           continue;
         }
         crackedNow = true;
@@ -877,6 +943,32 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         }
       }
     }
+    // ── Ability boxes ────────────────────────────────────────────────────
+    // 1-tap break: any queued smash (pendingSmash) that hits an aligned ability box
+    // in front of the player grants a full ⚡ charge. Boxes that scroll past
+    // unharmed are silently removed (no penalty).
+    for (let i = abilityBoxes.length - 1; i >= 0; i--) {
+      const a = abilityBoxes[i]!;
+      if (a.mesh.position.z > 12) {
+        scene.remove(a.mesh);
+        abilityBoxes.splice(i, 1);
+        continue;
+      }
+      const az = a.mesh.position.z;
+      const aligned = Math.abs(a.mesh.position.x - player.position.x) < 1.0;
+      if (pendingSmash && t < smashWindowUntil && aligned && az < 0.9 && az > -3) {
+        pendingSmash = false;
+        scene.remove(a.mesh);
+        abilityBoxes.splice(i, 1);
+        abilityCharge = ABILITY_FULL; // instant ready
+        burst(a.mesh.position.x, 1.0, a.mesh.position.z, debrisPMat, 14, 5, 2.5);
+        opts.sfx?.smash?.();
+        opts.sfx?.rune?.();
+        cb.onRune?.('⚡ ABILITY READY');
+        emit();
+        continue;
+      }
+    }
     for (let i = gems.length - 1; i >= 0; i--) {
       const g = gems[i]!;
       g.mesh.rotation.y += dt * 3;
@@ -896,6 +988,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         comboCount += 1;
         comboUntil = t + 1.2;
         gemCount += comboMult(); // worth more during a combo
+        // (Gems no longer charge the ⚡ — that's now exclusively the Ability Box's job.)
         opts.sfx?.coin?.();
         burst(gx, 1.0, gz, coinPMat, 5, 3, 1.5);
       }
@@ -966,22 +1059,27 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     }
     return false;
   }
+  // True while a Freeze ability is active on us. Blocks every input.
+  function isFrozen(): boolean {
+    return clock.elapsedTime < frozenUntilLocal;
+  }
   const moveLeft = () => {
-    if (over) return;
+    if (over || isFrozen()) return;
     const next = Math.max(0, laneIndex - 1);
     if (next === laneIndex || laneBlocked(next)) return;
     lastLane = laneIndex;
     laneIndex = next;
   };
   const moveRight = () => {
-    if (over) return;
+    if (over || isFrozen()) return;
     const next = Math.min(2, laneIndex + 1);
     if (next === laneIndex || laneBlocked(next)) return;
     lastLane = laneIndex;
     laneIndex = next;
   };
   const jump = () => {
-    if (!over && grounded && !jumping) {
+    if (over || isFrozen()) return;
+    if (grounded && !jumping) {
       jumping = true;
       velY = 15;
       grounded = false;
@@ -989,7 +1087,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     }
   };
   const slide = () => {
-    if (over) return;
+    if (over || isFrozen()) return;
     if (jumping || player.position.y > 0.001) {
       // Airborne: drop fast AND slide on landing — a single press triggers both.
       fastFalling = true;
@@ -1000,12 +1098,77 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     }
   };
   const breakBox = () => {
-    if (over || paused) return;
+    if (over || paused || isFrozen()) return;
     const now = clock.elapsedTime;
-    if (now < breakCooldownUntil) return; // still cooling down
+    // No cooldown — tap-to-smash is the primary input now; gating it would feel broken.
+    // (The Ability button has its own charge gate; breakBox stays free-flowing.)
     pendingSmash = true;
     smashWindowUntil = now + 0.4; // a press stays live briefly so you can pre-tap
     attackUntil = now + 0.3; // play the smash animation
+  };
+
+  // ── Ability ────────────────────────────────────────────────────────────────────
+  // Each dino has a signature ability fired by the charged-up ⚡ button. Charge fills
+  // from gem pickups + successful smashes; reaches 1.0 → button is ready. Using it
+  // burns the full charge, so it's a power-spike reward for playing well rather than
+  // a constant-on advantage.
+  //
+  // Named `castAbility` (not `useAbility`) so ESLint's react-hooks/rules-of-hooks
+  // doesn't flag the call inside `onKey` — that rule treats any `use*` identifier as
+  // a hook. The handle still exposes it under `useAbility` for a clean public API.
+  const castAbility = () => {
+    if (over || paused || isFrozen()) return;
+    if (abilityCharge < ABILITY_FULL) return; // not ready — no-op
+    abilityCharge = 0;
+    const character = opts.character ?? 'trik';
+    const t = clock.elapsedTime;
+    // SOLO fallback effect (canvas overrides this in multiplayer by calling the server
+    // ability + consumeAbilityCharge() instead — so this branch only runs in solo).
+    if (character === 'stego') {
+      shieldActive = true;
+      invulnUntil = t + 4;
+      cb.onRune?.('🛡️ IRON PLATES');
+    } else if (character === 'brachio') {
+      magnetUntil = t + 9;
+      gemCount += 10;
+      cb.onRune?.('🧲 COSMIC VACUUM');
+    } else {
+      speed += 22 / 3.6;
+      invulnUntil = t + 3;
+      cb.onRune?.('⚡ TURBO DASH');
+    }
+    opts.sfx?.boost?.();
+    opts.sfx?.rune?.();
+    emit();
+  };
+
+  // ── PvP receivers (called by the canvas when this player is hit by an opponent) ───
+  /** Freeze: block all inputs for `durationMs`. Used by Stego's Freeze Shot. */
+  const applyFreeze = (durationMs: number) => {
+    if (over) return;
+    frozenUntilLocal = clock.elapsedTime + durationMs / 1000;
+    shakeUntil = clock.elapsedTime + 0.3;
+    opts.sfx?.hit?.();
+    emit();
+  };
+  /** Stun: brief speed cap + screen shake. Used by Brachio's Thunder (AoE). */
+  const applyStun = (durationMs: number) => {
+    if (over) return;
+    stunSpeedCapUntilLocal = clock.elapsedTime + durationMs / 1000;
+    speed = Math.min(speed, MIN_SPEED + 1); // hard slow down for the duration
+    shakeUntil = clock.elapsedTime + 0.3;
+    opts.sfx?.hit?.();
+    emit();
+  };
+  /** Heart hit: drives the same code path as a box collision. Used by Trik's Web Pull. */
+  const applyHit = () => {
+    hit();
+  };
+  /** Burn the charge without playing a solo effect — for MP where the rival gets the
+   *  effect instead. Server-relayed event handles the cast feedback. */
+  const consumeAbilityCharge = () => {
+    abilityCharge = 0;
+    emit();
   };
 
   const onKey = (e: KeyboardEvent) => {
@@ -1015,6 +1178,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     else if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') jump();
     else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') slide();
     else if ((e.key === 'e' || e.key === 'E') && !e.repeat) breakBox();
+    else if ((e.key === 'q' || e.key === 'Q') && !e.repeat) castAbility();
   };
   window.addEventListener('keydown', onKey);
 
@@ -1062,6 +1226,10 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       crateMat.dispose();
       crateIconMat.map?.dispose();
       crateIconMat.dispose();
+      abilityBoxGeo.dispose();
+      abilityBoxMat.dispose();
+      abilityBoxIconMat.map?.dispose();
+      abilityBoxIconMat.dispose();
       particleGeo.dispose();
       coinPMat.dispose();
       dustPMat.dispose();
@@ -1080,6 +1248,11 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     jump,
     slide,
     breakBox,
+    useAbility: castAbility,
+    consumeAbilityCharge,
+    applyFreeze,
+    applyStun,
+    applyHit,
     setPaused(b: boolean) {
       paused = b;
     },

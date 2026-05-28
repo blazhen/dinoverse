@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { DinoType } from './dino-character';
-import { defaultServerUrl, makeRoomCode, Multiplayer, type MpPlayer, type MpState } from './multiplayer';
+import { defaultServerUrl, makeRoomCode, Multiplayer, type AbilityEvent, type AbilityKind, type MpPlayer, type MpState } from './multiplayer';
 import { RunnerAudio } from './runner-audio';
 import type { RunnerHandle, RunnerOpponent, RunnerOptions, RunnerStats, RunnerView } from './runner';
 
@@ -58,7 +58,7 @@ function lsDino(): DinoType {
   return 'trik';
 }
 
-const EMPTY_STATS: RunnerStats = { distance: 0, gems: 0, hearts: 3, shield: false, magnet: false, speed: 0, breakReady: true, combo: 1, lane: 1, y: 0 };
+const EMPTY_STATS: RunnerStats = { distance: 0, gems: 0, hearts: 3, shield: false, magnet: false, speed: 0, breakReady: true, combo: 1, lane: 1, y: 0, abilityCharge: 0 };
 
 const DINOS: { id: DinoType; label: string }[] = [
   { id: 'trik', label: '⚡ Trik' },
@@ -105,6 +105,9 @@ export function RunnerCanvas() {
   // Confirm-quit modal: when true, show a Cancel/Yes overlay before tearing down a run.
   // Game-over screen skips this (the run is already done — nothing to confirm).
   const [confirmQuit, setConfirmQuit] = useState(false);
+  // PvP receiver overlay — set when a rival hits us; cleared automatically when expired.
+  // The runner.ts handles input-blocking; this is purely a visual cue on OUR screen.
+  const [hitOverlay, setHitOverlay] = useState<{ kind: AbilityKind; until: number } | null>(null);
   const runeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chargeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -137,14 +140,29 @@ export function RunnerCanvas() {
     chargeTimer.current = setTimeout(() => setCharging(false), 800);
   }
 
-  // 💥 single-tap smash. Gold breaks on one tap; crates take two fast taps (the runner handles
-  // the crack-then-finish bookkeeping internally).
-  function smashTap() {
-    if (!stats.breakReady) {
+  // The on-screen ⚡ button is the ABILITY trigger. The charge bar only fills when the
+  // player breaks an Ability Box (see runner.ts). In multiplayer the ability is a PvP
+  // shot — we tell the server which kind based on the local dino, the server picks the
+  // target, broadcasts an event, and the target's client applies the effect locally.
+  function abilityKindForDino(d: DinoType): AbilityKind {
+    if (d === 'stego') return 'freeze';
+    if (d === 'brachio') return 'thunder';
+    return 'pull'; // trik / trex / default
+  }
+  function fireAbility() {
+    if (stats.abilityCharge < 1) {
       showCharging();
       return;
     }
-    handleRef.current?.breakBox();
+    if (mpScreen === 'race' && mpRef.current) {
+      // Multiplayer: tell the server, then burn the local charge. The server broadcasts
+      // back via onAbility (handled in mpConnect) — that's where we play the cast effect.
+      mpRef.current.ability(abilityKindForDino(selectedDino));
+      handleRef.current?.consumeAbilityCharge();
+    } else {
+      // Solo fallback (per-dino local boost defined inside runner.ts castAbility).
+      handleRef.current?.useAbility();
+    }
   }
 
   // ── Multiplayer flow ────────────────────────────────────────────────────────
@@ -202,6 +220,7 @@ export function RunnerCanvas() {
           setMpState(null);
           setMpError('Disconnected from room.');
         },
+        onAbility: handleAbilityEvent,
       });
     } catch (e) {
       setMpError((e as Error).message || 'Failed to connect to server.');
@@ -261,6 +280,48 @@ export function RunnerCanvas() {
     const me = mpState.players.find((p) => p.id === mpState.myId);
     mpRef.current?.ready(!me?.ready);
   }
+
+  // Receive a PvP ability broadcast from the server. Three things might happen:
+  //  1. We're the CASTER → flash a cast-confirm rune (e.g. "❄️ FROZE!").
+  //  2. We're a TARGET → apply the effect to the local runner + show the receiver overlay.
+  //  3. Cast fizzled (no targets) → only the caster sees a "no target" hint.
+  function handleAbilityEvent(e: AbilityEvent) {
+    const myId = mpStateRef.current?.myId;
+    if (!myId) return;
+    if (e.casterId === myId) {
+      // We cast it. Show what happened.
+      if (e.targetIds.length === 0) {
+        showRune('🌫️ no target');
+      } else {
+        const label = e.kind === 'freeze' ? '❄️ FROZE!' : e.kind === 'pull' ? '🕸️ PULLED!' : '⚡ THUNDER!';
+        showRune(label);
+      }
+      return;
+    }
+    if (!e.targetIds.includes(myId)) return; // not for us
+    // We're a target — apply the effect to our local runner + show the overlay.
+    if (e.kind === 'freeze') {
+      handleRef.current?.applyFreeze(2000);
+      setHitOverlay({ kind: 'freeze', until: Date.now() + 2000 });
+    } else if (e.kind === 'pull') {
+      handleRef.current?.applyHit(); // -1 heart (same code path as a box collision)
+      setHitOverlay({ kind: 'pull', until: Date.now() + 1000 });
+    } else if (e.kind === 'thunder') {
+      handleRef.current?.applyStun(1500);
+      setHitOverlay({ kind: 'thunder', until: Date.now() + 1500 });
+    }
+  }
+  // Auto-clear the receiver overlay when its window passes.
+  useEffect(() => {
+    if (!hitOverlay) return;
+    const remain = hitOverlay.until - Date.now();
+    if (remain <= 0) {
+      setHitOverlay(null);
+      return;
+    }
+    const id = window.setTimeout(() => setHitOverlay(null), remain);
+    return () => window.clearTimeout(id);
+  }, [hitOverlay]);
 
   // Whenever the room state changes, mirror to the ref + push opponents into the live runner.
   useEffect(() => {
@@ -451,36 +512,42 @@ export function RunnerCanvas() {
     }
   }
 
-  // ── Swipe-anywhere controls (touch devices only) ──────────────────────────────
-  // Industry-standard endless-runner controls: swipe ↑/↓/◀/▶ anywhere on the screen to
-  // jump / slide / change lane. One swipe = one move, like Subway Surfers. The 💥 button
-  // (pinned bottom-left) stops touch propagation so taps on it don't register as swipes.
-  // Multi-finger: we track the FIRST touch only — additional fingers (e.g. resting on 💥)
-  // are ignored. A new swipe needs a finger lift + re-touch.
+  // ── Swipe / tap controls (touch devices only) ──────────────────────────────────
+  // Swipe ↑/↓/◀/▶ anywhere → move (one swipe = one discrete move).
+  // Tap anywhere (touch without swipe, released quickly) → smash. Two quick taps in
+  // succession naturally break a 📦 crate (runner already needs 2 hits to kill one).
+  // The 💥 button is now the ABILITY button — it has its own onTouchStart with
+  // stopPropagation so a tap on it doesn't double-fire as a smash.
   const SWIPE_FIRE = 36; // px from origin → fire the direction
+  const TAP_MAX_DURATION = 280; // ms — touch released faster than this AND no swipe = tap
+  const TAP_MAX_DRIFT = 12; // px — finger barely moved AND no swipe = tap
   const swipeIdRef = useRef<number | null>(null);
   const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const swipeStartTimeRef = useRef<number>(0);
+  const swipeMaxDriftRef = useRef<number>(0); // furthest the finger drifted during this touch
   const swipeFiredRef = useRef(false); // one swipe per touch — re-touch to swipe again
 
   const onWrapTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     if (!playing) return;
-    // Only register a swipe finger if we don't already have one tracked.
     if (swipeIdRef.current !== null) return;
     const t = e.changedTouches[0];
     if (!t) return;
     swipeIdRef.current = t.identifier;
     swipeStartRef.current = { x: t.clientX, y: t.clientY };
+    swipeStartTimeRef.current = Date.now();
+    swipeMaxDriftRef.current = 0;
     swipeFiredRef.current = false;
   };
   const onWrapTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (!playing || swipeFiredRef.current || !swipeStartRef.current) return;
+    if (!playing || !swipeStartRef.current) return;
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i]!;
       if (t.identifier !== swipeIdRef.current) continue;
       const dx = t.clientX - swipeStartRef.current.x;
       const dy = t.clientY - swipeStartRef.current.y;
-      if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_FIRE) return;
-      // Dominant axis wins — clean discrete output even for diagonal swipes.
+      const mag = Math.max(Math.abs(dx), Math.abs(dy));
+      if (mag > swipeMaxDriftRef.current) swipeMaxDriftRef.current = mag;
+      if (swipeFiredRef.current || mag < SWIPE_FIRE) return;
       const dir =
         Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy < 0 ? 'up' : 'down';
       swipeFiredRef.current = true;
@@ -495,9 +562,16 @@ export function RunnerCanvas() {
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i]!;
       if (t.identifier === swipeIdRef.current) {
+        const wasSwipe = swipeFiredRef.current;
+        const duration = Date.now() - swipeStartTimeRef.current;
+        const drift = swipeMaxDriftRef.current;
         swipeIdRef.current = null;
         swipeStartRef.current = null;
         swipeFiredRef.current = false;
+        // If they didn't swipe AND let go quickly without drifting → it's a TAP → smash.
+        if (!wasSwipe && duration < TAP_MAX_DURATION && drift < TAP_MAX_DRIFT) {
+          handleRef.current?.breakBox();
+        }
         return;
       }
     }
@@ -580,6 +654,10 @@ export function RunnerCanvas() {
       },
     };
     handleRef.current = createRunner(mountRef.current, { onUpdate, onGameOver, onRune: showRune }, opts);
+    // 3-2-1 countdown so the player can settle their fingers on the controls before the
+    // run actually starts. Mirrors the multiplayer race-start countdown.
+    handleRef.current.setPaused(true);
+    setCountdownEnd(Date.now() + 3000);
   }
 
   // Multiplayer entrypoint: same as start(), but with the room's seed (deterministic track)
@@ -664,6 +742,9 @@ export function RunnerCanvas() {
     setStats(EMPTY_STATS);
     topSpeedRef.current = 0;
     handleRef.current?.restart();
+    // Same 3-2-1 grace as the first run.
+    handleRef.current?.setPaused(true);
+    setCountdownEnd(Date.now() + 3000);
   }
 
   function toMenu() {
@@ -716,9 +797,20 @@ export function RunnerCanvas() {
   const dpadBtn = isCoarse
     ? 'pointer-events-auto touch-manipulation select-none rounded-full bg-white/25 px-7 py-5 text-3xl font-bold text-white backdrop-blur active:bg-white/45'
     : 'pointer-events-auto touch-manipulation select-none rounded-full bg-white/20 px-5 py-4 text-2xl font-bold text-white backdrop-blur active:bg-white/40';
-  const smashSize = isCoarse ? 'px-7 py-5 text-3xl' : 'px-5 py-4 text-2xl';
-  const smashReady = 'bg-amber-400 text-slate-900 ring-4 ring-amber-200/80 active:bg-amber-300 touch-manipulation';
-  const smashCooling = 'border-2 border-dashed border-white/30 bg-white/5 text-white/25 touch-manipulation';
+  // ⚡ Ability button — same physical button slot as the old smash button, but its job is
+  // now "use ability when full". Visual fills with amber as the charge accumulates (conic
+  // gradient driving the background); pulses when ready to fire.
+  const abilitySize = isCoarse ? 'px-7 py-5 text-3xl' : 'px-5 py-4 text-2xl';
+  const abilityFull = stats.abilityCharge >= 1;
+  const abilityDeg = Math.max(0, Math.min(1, stats.abilityCharge)) * 360;
+  const abilityClasses = `touch-manipulation pointer-events-auto select-none relative rounded-full font-bold transition ${
+    abilityFull
+      ? 'text-slate-900 ring-4 ring-amber-200 animate-pulse'
+      : 'text-white/70 border-2 border-dashed border-white/30'
+  }`;
+  const abilityStyle: React.CSSProperties = abilityFull
+    ? { backgroundColor: '#fbbf24' }
+    : { background: `conic-gradient(from -90deg, #fbbf24 ${abilityDeg}deg, rgba(255,255,255,0.06) ${abilityDeg}deg)` };
   const pillBtn = 'pointer-events-auto rounded-full bg-white/20 px-4 py-2 text-sm font-bold backdrop-blur transition hover:bg-white/30';
   const pick = (active: boolean) =>
     `pointer-events-auto rounded-xl px-3 py-2 text-sm font-bold backdrop-blur transition ${
@@ -793,6 +885,23 @@ export function RunnerCanvas() {
         return (
           <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-black/30 backdrop-blur-[2px]">
             <div className={`text-[14rem] font-black leading-none text-white drop-shadow-2xl ${label === 'GO!' ? 'text-emerald-300' : ''}`}>
+              {label}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* PvP receiver overlay — flashes a screen border + centered label when a rival
+          hits us with an ability. Colour-coded by kind. The runner's input-block /
+          speed-cap does the actual gameplay effect; this is purely visual. */}
+      {hitOverlay && (() => {
+        const isFreeze = hitOverlay.kind === 'freeze';
+        const isPull = hitOverlay.kind === 'pull';
+        const tint = isFreeze ? 'bg-sky-400/25 ring-sky-300' : isPull ? 'bg-red-500/25 ring-red-400' : 'bg-violet-400/25 ring-violet-300';
+        const label = isFreeze ? '❄️ FROZEN' : isPull ? '🕸️ PULLED' : '⚡ STUNNED';
+        return (
+          <div className={`pointer-events-none absolute inset-0 z-20 flex items-center justify-center ring-8 ring-inset ${tint}`}>
+            <div className="rounded-2xl bg-black/55 px-8 py-4 text-3xl font-black text-white drop-shadow-lg">
               {label}
             </div>
           </div>
@@ -1068,12 +1177,15 @@ export function RunnerCanvas() {
           <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-3 px-8 py-6 text-center">
             <h2 className="text-2xl font-black">How to play</h2>
             <ul className="space-y-1.5 text-left text-sm">
-              <li>📱 Mobile / tablet: <b>swipe ↑↓◀▶ anywhere</b> on the screen — up = jump, down = slide, left/right = change lane. Tap <b>💥 (bottom-left)</b> to smash.</li>
-              <li>⌨️ Desktop: ←/→ switch lane · ↑/Space jump · ↓ slide · E smash · P pause</li>
-              <li>🟫 Ground box → jump over OR land on top</li>
-              <li>🟦 Flying bar → slide under (no jumping over)</li>
-              <li>💥 Tap once to smash 🟨 gold for a rune. 📦 crates need <b>two fast taps</b> — finish them for a 🎰 JACKPOT! (3s cooldown after a break)</li>
-              <li>💎 Grab coins — chain them for a 🔥 combo · ⚡ boosts go faster</li>
+              <li>📱 Mobile / tablet: <b>swipe ↑↓◀▶ anywhere</b> to move · <b>tap anywhere</b> to smash · <b>⚡ button (bottom-left)</b> = your ability (when charged).</li>
+              <li>⌨️ Desktop: ←/→ lane · ↑/Space jump · ↓ slide · <b>E smash</b> · <b>Q ⚡ ability</b> · P pause</li>
+              <li>🟫 Ground box → jump over OR land on top · 🟦 Flying bar → slide under</li>
+              <li>Tap once on 🟨 gold for a rune. 📦 crates need <b>two fast taps</b> → 🎰 JACKPOT.</li>
+              <li><b>⚡ Ability Box</b> (purple) — tap once to get a charged ability. After firing, find another box to charge again. In multiplayer your ability targets a rival:</li>
+              <li className="pl-4">⚡ Trik: <b>Web Pull</b> — yanks the rival ahead of you back, costs them ❤️.</li>
+              <li className="pl-4">🛡️ Stego: <b>Freeze Shot</b> — locks the rival in place for 2 seconds.</li>
+              <li className="pl-4">🔭 Brachio: <b>Thunder</b> — stuns ALL rivals ahead of you for 1.5 seconds.</li>
+              <li>💎 Coins chain into a 🔥 combo. ⚡ ground boosts add km/h.</li>
               <li>❤️ Don&apos;t lose all your hearts!</li>
             </ul>
             <button type="button" onClick={() => setShowHowTo(false)} className="pointer-events-auto mt-2 rounded-full bg-emerald-500 px-6 py-2.5 font-bold hover:bg-emerald-600">
@@ -1083,7 +1195,8 @@ export function RunnerCanvas() {
         </div>
       )}
 
-      {/* Desktop D-pad — buttons + smash, hidden on touch (touch uses the joysticks below). */}
+      {/* Desktop D-pad — movement + ABILITY button (was the smash button; smashing on
+          desktop is now the E key, ability is Q OR a click here). */}
       {playing && !isCoarse && (
         <div className="pointer-events-none absolute inset-x-0 bottom-3 flex items-end justify-between px-4">
           <div className="flex gap-2">
@@ -1096,13 +1209,12 @@ export function RunnerCanvas() {
           </div>
           <button
             type="button"
-            className={`pointer-events-auto relative select-none rounded-full ${smashSize} font-bold backdrop-blur transition ${
-              stats.breakReady ? smashReady : smashCooling
-            }`}
-            onPointerDown={smashTap}
-            aria-label="Smash"
+            className={`${abilityClasses} ${abilitySize}`}
+            style={abilityStyle}
+            onPointerDown={fireAbility}
+            aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
           >
-            💥
+            ⚡
           </button>
           <div className="flex gap-2">
             <button type="button" className={dpadBtn} onPointerDown={() => handleRef.current?.slide()} aria-label="Slide">
@@ -1115,28 +1227,26 @@ export function RunnerCanvas() {
         </div>
       )}
 
-      {/* Touch UI: swipe anywhere ↑↓◀▶ to move + 💥 button pinned bottom-left. The wrap div's
-          onTouchStart/Move/End above translate finger drags into discrete moves; the 💥 button
-          stops propagation so a tap on it never registers as a swipe. */}
+      {/* Touch UI: swipe anywhere = move · tap anywhere = smash · ⚡ ability button bottom-left.
+          The ⚡ button stops touch propagation so its tap never registers as a smash. */}
       {playing && isCoarse && (
         <>
           <button
             type="button"
-            className={`pointer-events-auto absolute bottom-4 left-4 z-20 select-none touch-manipulation rounded-full ${smashSize} font-bold backdrop-blur transition ${
-              stats.breakReady ? smashReady : smashCooling
-            }`}
+            className={`${abilityClasses} absolute bottom-4 left-4 z-20 ${abilitySize}`}
+            style={abilityStyle}
             onTouchStart={(e) => {
               e.stopPropagation();
-              smashTap();
+              fireAbility();
             }}
-            aria-label="Smash"
+            aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
           >
-            💥
+            ⚡
           </button>
 
-          {/* Idle hint near the bottom-right — clears up once player makes a move. */}
+          {/* Idle hint — clears up once player makes a move. */}
           <div className="pointer-events-none absolute bottom-4 right-4 rounded-full bg-black/30 px-3 py-1.5 text-xs font-semibold text-white/90 backdrop-blur">
-            swipe ↑↓◀▶ anywhere
+            swipe ↑↓◀▶ to move · tap = smash
           </div>
         </>
       )}
