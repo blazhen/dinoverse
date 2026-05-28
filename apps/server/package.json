@@ -1,0 +1,21 @@
+{
+  "name": "@dinoverse/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Dino Dash realtime race server (Colyseus). Deploys to Railway.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@colyseus/schema": "^3.0.0",
+    "colyseus": "^0.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

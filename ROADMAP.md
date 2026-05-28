@@ -3,7 +3,17 @@
 The durable backlog. Session task lists reset; **this file is the memory.** Check items off as
 they're done (`- [x]`), add new ones as they surface, and keep "Open Decisions" current.
 
-Last updated: 2026-05-23
+Last updated: 2026-05-28
+
+---
+
+## 🎯 CURRENT FOCUS — LAUNCH DINO DASH FIRST (2026-05-28)
+Sole priority until it ships. Everything else (2D platformer core, hub, quizzes, media/feed) is
+**paused.** The launch path:
+1. **Single-player polish** — walk-on-top-of-boxes, save the top-speed "rank" to DB, feel/balance.
+2. **Multiplayer race** (the headline) — Colyseus on Railway; see Phase 4 + [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md).
+3. **Package & ship** — Capacitor (iOS/Android) + web/PWA; store assets; age rating.
+4. **Safety for launch** — friends-only rooms, no free chat, COPPA consent, privacy policy.
 
 ---
 
@@ -145,6 +155,13 @@ Last updated: 2026-05-23
 - [ ] Real-time room/state server (Colyseus on Railway) — authoritative state, client prediction
 - [ ] **Friends-only invite-code rooms** (NO random matchmaking with strangers); room lifecycle + reconnect
 - [ ] Dino Dash multiplayer race: position sync, shared track, finish/ranking
+- [ ] Shared-track pickups regenerate after collection so trailing players can grab them too —
+      ⚡ speed boosts ~1s, 💎 coins ~3s. Server-authoritative (no single-player equivalent).
+- [ ] **Magnet = a "pull the pack together" item** (revised 2026-05-28): on pickup it still vacuums
+      coins, but ALSO **pulls nearby players within ~20–25m for 1–2s** — speeds up players *behind*
+      the user and drags *leading* players back (rubber-band). Beyond ~25m, no player pull (coins only).
+- [ ] **Vote-to-pause**: any player can request pause; the match pauses only on enough votes
+      (single-player pause is already built).
 - [ ] Per-dino signature ABILITY used on rivals (no switching) — temporary, non-damaging hindrances:
       spider-web (trap/pull/slow), thunder-zap (brief stun/shrink), venom-blindness (short blur),
       plus dash-boost + shield (block/cleanse). Mario-Kart-style; nobody is damaged or eliminated.

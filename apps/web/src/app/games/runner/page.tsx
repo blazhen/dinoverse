@@ -18,7 +18,7 @@ export default function RunnerPage() {
         </div>
         <p className="hidden text-xs text-slate-300 sm:block">
           <span className="font-semibold">←/→</span> switch lane · <span className="font-semibold">↑/Space</span>{' '}
-          jump · <span className="font-semibold">↓</span> slide · (or swipe)
+          jump · <span className="font-semibold">↓</span> slide · <span className="font-semibold">E</span> smash · <span className="font-semibold">P</span> pause · (or swipe)
         </p>
       </header>
 
@@ -27,8 +27,8 @@ export default function RunnerPage() {
       </div>
 
       <p className="px-4 py-1.5 text-center text-xs text-slate-400">
-        Run, dodge the blocks, and grab gems! Swipe or use the buttons. (3D prototype — placeholder
-        art.)
+        Jump 🟫, slide under 🟦, grab 💎, and smash 🟨 boxes / 📦 crates (💥) for a rune — crates need
+        2 fast taps! (3D prototype — placeholder art.)
       </p>
     </main>
   );

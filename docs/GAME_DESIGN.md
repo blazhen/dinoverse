@@ -65,6 +65,10 @@ items come alive.
   helpers like **dash-boost** and **shield** (block or cleanse an incoming ability). Final per-dino
   assignment is TBD — the palette + rules are the point. **Nobody takes damage or is eliminated** —
   worst case you're slowed/pulled/blinded for a couple seconds. Keeps Pillar 4.
+- **Magnet = a catch-up item, not a coin-vacuum** (revised 2026-05-28): grabbing it still pulls
+  coins, but also **tugs nearby racers within ~20–25m for 1–2s** — speeds up players behind, drags
+  leaders back (rubber-band). Beyond ~25m nobody is pulled. Plus **coins/boosts regenerate** shortly
+  after pickup (coins ~3s, boosts ~1s) so the leader can't hoover everything.
 - **Cross-age in one race:** auto-run + **steering/lane assist for ages 5–7** so a 5-year-old and a
   14-year-old can play the same race (Mario Kart 8's auto-steer model). Item chaos keeps it fun for
   the older kids.

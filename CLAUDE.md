@@ -2,6 +2,12 @@
 
 This file is loaded automatically each session. Keep it short; it points to the source-of-truth docs.
 
+## 🎯 Current focus (2026-05-28)
+**Dino Dash** (the Three.js 3D endless runner at `/games/runner`) is the **first game to launch — sole
+focus until it ships.** Its headline feature is the **multiplayer race** (see [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md)).
+This overrides the earlier "Dino Dash = side mini-game / the 2D platformer is the heart" framing —
+the platformer/hub/quizzes are deprioritized until Dino Dash launches.
+
 ## What this is
 
 A multi-platform educational-entertainment IP: dinosaurs that evolved into a modern society.

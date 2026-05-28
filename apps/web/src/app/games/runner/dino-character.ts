@@ -14,7 +14,7 @@ import * as THREE from 'three';
 
 export type DinoType = 'trik' | 'stego' | 'brachio' | 'trex';
 export type SkinName = 'classic' | 'lava' | 'ice' | 'neon';
-export type DinoAnim = 'idle' | 'run' | 'jump' | 'duck' | 'death' | 'special';
+export type DinoAnim = 'idle' | 'run' | 'jump' | 'duck' | 'death' | 'special' | 'attack';
 
 type RGB = [number, number, number];
 interface SkinColors {
@@ -130,6 +130,20 @@ const ANIMATIONS: Record<DinoAnim, (p: Parts, t: number, root: THREE.Group) => v
     root.rotation.x = 0;
   },
 
+  attack(p, t, root) {
+    // Quick two-arm overhead smash (for breaking crates).
+    const k = Math.min(t * 7, 1); // swing completes in ~0.14s, then holds
+    p.armLPivot.rotation.x = -2.4 + k * 3.0; // from raised up to swung down/forward
+    p.armRPivot.rotation.x = -2.4 + k * 3.0;
+    p.headPivot.rotation.x = 0.15 * k;
+    p.tailPivot.rotation.x = -0.2;
+    p.legLPivot.rotation.x = 0;
+    p.legRPivot.rotation.x = 0;
+    root.rotation.x = 0.12 * k;
+    root.rotation.z = 0;
+    root.scale.y = 1;
+  },
+
   special(p, t, root) {
     // Spin — the per-dino multiplayer ability flourish.
     root.rotation.y = t * 6;
@@ -163,6 +177,7 @@ export class DinoCharacter {
   private currentAnim: DinoAnim = 'idle';
   private hostControlsHeight: boolean;
   private parts!: Parts;
+  private rig!: THREE.Group; // animations transform this; `root` is left for the host (size/place/face)
   private mats!: {
     primary: THREE.MeshStandardMaterial;
     secondary: THREE.MeshStandardMaterial;
@@ -200,9 +215,9 @@ export class DinoCharacter {
   /** Call every frame from the game loop. */
   update(dt: number) {
     this.animTime += dt;
-    const baseY = this.root.position.y;
-    ANIMATIONS[this.currentAnim](this.parts, this.animTime, this.root);
-    if (this.hostControlsHeight) this.root.position.y = baseY; // keep limb motion, drop the anim's Y
+    const baseY = this.rig.position.y;
+    ANIMATIONS[this.currentAnim](this.parts, this.animTime, this.rig);
+    if (this.hostControlsHeight) this.rig.position.y = baseY; // keep limb motion, drop the anim's Y
   }
 
   dispose() {
@@ -263,7 +278,11 @@ export class DinoCharacter {
       white: this.mat([1, 1, 1]),
     };
     const M = this.mats;
-    const root = this.root;
+    // Meshes + animations live on an inner rig; the outer `this.root` is the host's handle for
+    // size/position/facing, so the anims' scale/rotation writes never clobber the host transform.
+    this.rig = new THREE.Group();
+    this.root.add(this.rig);
+    const root = this.rig;
 
     // Body + belly.
     const body = this.sphere(1.8, 2.0, 1.5, M.primary);
@@ -360,7 +379,7 @@ export class DinoCharacter {
       for (const pl of plates) {
         const plate = this.box(0.15, pl.size, pl.size * 0.9, M.secondary);
         plate.position.set(0, pl.y, pl.z);
-        this.root.add(plate);
+        this.rig.add(plate);
       }
       for (const sx of [-0.2, 0.2]) {
         const spike = this.cylinder(0.02, 0.2, 0.6, M.secondary);
@@ -379,7 +398,7 @@ export class DinoCharacter {
         const f = i / (segs - 1);
         const neck = this.sphere(0.6 - f * 0.18, 0.6 - f * 0.18, 0.6 - f * 0.18, M.primary);
         neck.position.set(0, 2.15 + f * 1.15, 0.2 + f * 0.35);
-        this.root.add(neck);
+        this.rig.add(neck);
       }
     } else if (this.type === 'trex') {
       armL.scale.multiplyScalar(0.6); // tiny arms
