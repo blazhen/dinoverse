@@ -891,7 +891,7 @@ export function RunnerCanvas() {
                       📤 Share
                     </button>
                   </div>
-                  <p className="text-[10px] text-white/50">Or read them the code: <b className="font-mono">{mpCode}</b> (they tap "I have a code" below).</p>
+                  <p className="text-[10px] text-white/50">Or read them the code: <b className="font-mono">{mpCode}</b> (they tap “I have a code” below).</p>
                 </div>
 
                 <div className="w-full max-w-md">

@@ -1,7 +1,8 @@
 {
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
-    "builder": "NIXPACKS"
+    "builder": "NIXPACKS",
+    "buildCommand": "echo 'no build step — @dinoverse/server runs TypeScript at runtime via tsx; skipping turbo to avoid rebuilding the web app on every server deploy'"
   },
   "deploy": {
     "startCommand": "pnpm --filter @dinoverse/server start",
