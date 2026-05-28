@@ -853,7 +853,11 @@ export function RunnerCanvas() {
               <p className="max-w-md rounded-xl bg-red-500/20 px-4 py-2 text-sm font-semibold text-red-100 ring-1 ring-red-300/40">
                 ⚠ {mpError}
                 <span className="mt-1 block text-xs text-red-200/70">
-                  Check that the race server is reachable (see DEPLOY.md / MULTIPLAYER.md).
+                  Server URL: <code className="font-mono">{defaultServerUrl()}</code>
+                  <br />
+                  {mpError.includes('Invalid URL')
+                    ? 'Your NEXT_PUBLIC_COLYSEUS_URL env var is malformed. It must start with wss:// (or ws:// for dev).'
+                    : 'Is the race server running and reachable? See DEPLOY.md / MULTIPLAYER.md.'}
                 </span>
               </p>
             )}

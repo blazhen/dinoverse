@@ -62,11 +62,35 @@ interface RemoteState {
 }
 
 export function defaultServerUrl(): string {
-  const fromEnv = process.env.NEXT_PUBLIC_COLYSEUS_URL;
-  if (fromEnv) return fromEnv;
-  if (typeof window === 'undefined') return 'ws://localhost:2567';
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${proto}//${window.location.hostname}:2567`;
+  // Auto-derived from the page's own hostname — works on LAN and as a sensible fallback
+  // if NEXT_PUBLIC_COLYSEUS_URL is missing or malformed in production.
+  const derived =
+    typeof window === 'undefined'
+      ? 'ws://localhost:2567'
+      : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:2567`;
+
+  const raw = (process.env.NEXT_PUBLIC_COLYSEUS_URL ?? '').trim();
+  if (!raw) return derived;
+
+  // Validate the env var BEFORE handing it to `new Client(url)` (which calls `new URL()` and
+  // throws "Invalid URL" on garbage). A bad value here is almost always missing/wrong protocol.
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'ws:' && u.protocol !== 'wss:') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[multiplayer] NEXT_PUBLIC_COLYSEUS_URL must start with ws:// or wss://, got "${u.protocol}". Falling back to ${derived}. Fix the Vercel env var.`,
+      );
+      return derived;
+    }
+    return raw;
+  } catch {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[multiplayer] NEXT_PUBLIC_COLYSEUS_URL is not a valid URL: "${raw}". Falling back to ${derived}. Did you forget the wss:// prefix?`,
+    );
+    return derived;
+  }
 }
 
 function asDino(s: string): DinoType {
