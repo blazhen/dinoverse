@@ -97,6 +97,11 @@ export function RunnerCanvas() {
   const [showHowTo, setShowHowTo] = useState(false);
   const [isCoarse, setIsCoarse] = useState(false); // true on touch devices (drives auto-fullscreen + larger buttons)
   const [isFs, setIsFs] = useState(false);
+  // 3-2-1 countdown overlay: set to the epoch-ms when the countdown should END (i.e. when
+  // the runner should unpause). Drives both the race-start countdown (server "countdown"
+  // phase) and the resume-from-pause countdown. While set, the runner is paused.
+  const [countdownEnd, setCountdownEnd] = useState<number | null>(null);
+  const [countdownTick, setCountdownTick] = useState(0); // force re-render each 100ms
   const runeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const chargeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -185,7 +190,9 @@ export function RunnerCanvas() {
     try {
       const mp = new Multiplayer();
       mpRef.current = mp;
-      await mp.connect(code.toUpperCase(), name, selectedDino, {
+      // `view` is honoured only if THIS connection is the room-creating one (host). For
+      // joiners, the room already exists and the server keeps its existing view.
+      await mp.connect(code.toUpperCase(), name, selectedDino, view, {
         onState: (s) => setMpState(s),
         onError: (msg) => setMpError(msg),
         onLeave: () => {
@@ -270,11 +277,19 @@ export function RunnerCanvas() {
     handleRef.current.setOpponents(ops);
   }, [mpState]);
 
-  // Phase transitions: lobby → racing kicks off the run with the shared seed.
+  // Phase transitions:
+  //  lobby → countdown : create the runner (paused) so the canvas paints behind the 3-2-1
+  //                       overlay; the local countdown timer matches the server's 3s window.
+  //  countdown → racing : the countdown tick effect already unpaused the runner; nothing
+  //                       to do here, just stay on the race screen.
   useEffect(() => {
-    if (mpState?.phase === 'racing' && mpScreen === 'lobby') {
+    if (mpState?.phase === 'countdown' && mpScreen === 'lobby') {
       setMpScreen('race');
-      void startMpRace();
+      void startMpRace().then(() => {
+        // Pause the freshly-created runner — the countdown overlay drives the unpause.
+        handleRef.current?.setPaused(true);
+        setCountdownEnd(Date.now() + 3000);
+      });
     }
   }, [mpState?.phase, mpScreen]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -369,6 +384,26 @@ export function RunnerCanvas() {
     void openMultiplayer(code);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Countdown tick + auto-resume when it hits zero. The overlay is rendered when
+  // `countdownEnd` is set; we re-render every 100ms via `countdownTick` so the big number
+  // updates smoothly, and unpause the runner the instant the deadline passes.
+  useEffect(() => {
+    if (countdownEnd == null) return;
+    let raf = 0;
+    const tick = () => {
+      const remainingMs = countdownEnd - Date.now();
+      if (remainingMs <= 0) {
+        setCountdownEnd(null);
+        handleRef.current?.setPaused(false);
+        return;
+      }
+      setCountdownTick((n) => n + 1);
+      raf = window.setTimeout(tick, 100) as unknown as number;
+    };
+    tick();
+    return () => window.clearTimeout(raf);
+  }, [countdownEnd]);
+
   // Track fullscreen state so the button can show the right icon.
   useEffect(() => {
     const h = () => setIsFs(!!document.fullscreenElement);
@@ -381,93 +416,54 @@ export function RunnerCanvas() {
     else void document.exitFullscreen?.();
   }
 
-  // ── Split-axis virtual joysticks (touch devices only) ──────────────────────────
-  // LEFT half → vertical joystick (drag up = jump, down = slide). RIGHT half → horizontal
-  // joystick (drag left/right to change lane). Each joystick anchors at the finger's first
-  // touch point and only listens for movement on its own axis, so wobble on the other axis
-  // can't trigger a wrong move. Both joysticks can be held simultaneously (multi-touch).
-  const JOY_FIRE = 32; // px past origin → fire
-  const JOY_RESET = 12; // px back toward origin → re-arm (hysteresis)
-  const leftIdRef = useRef<number | null>(null);
-  const leftAnchorRef = useRef<{ x: number; y: number } | null>(null);
-  const leftArmedRef = useRef<'up' | 'down' | null>(null);
-  const rightIdRef = useRef<number | null>(null);
-  const rightAnchorRef = useRef<{ x: number; y: number } | null>(null);
-  const rightArmedRef = useRef<'left' | 'right' | null>(null);
-  const [leftJoy, setLeftJoy] = useState<{ x: number; y: number; dy: number } | null>(null);
-  const [rightJoy, setRightJoy] = useState<{ x: number; y: number; dx: number } | null>(null);
+  // ── Swipe-anywhere controls (touch devices only) ──────────────────────────────
+  // Industry-standard endless-runner controls: swipe ↑/↓/◀/▶ anywhere on the screen to
+  // jump / slide / change lane. One swipe = one move, like Subway Surfers. The 💥 button
+  // (pinned bottom-left) stops touch propagation so taps on it don't register as swipes.
+  // Multi-finger: we track the FIRST touch only — additional fingers (e.g. resting on 💥)
+  // are ignored. A new swipe needs a finger lift + re-touch.
+  const SWIPE_FIRE = 36; // px from origin → fire the direction
+  const swipeIdRef = useRef<number | null>(null);
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
+  const swipeFiredRef = useRef(false); // one swipe per touch — re-touch to swipe again
 
   const onWrapTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
     if (!playing) return;
-    const rect = wrapRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    for (let i = 0; i < e.changedTouches.length; i++) {
-      const t = e.changedTouches[i]!;
-      const x = t.clientX - rect.left;
-      const y = t.clientY - rect.top;
-      if (x < rect.width / 2) {
-        if (leftIdRef.current === null) {
-          leftIdRef.current = t.identifier;
-          leftAnchorRef.current = { x, y };
-          leftArmedRef.current = null;
-          setLeftJoy({ x, y, dy: 0 });
-        }
-      } else if (rightIdRef.current === null) {
-        rightIdRef.current = t.identifier;
-        rightAnchorRef.current = { x, y };
-        rightArmedRef.current = null;
-        setRightJoy({ x, y, dx: 0 });
-      }
-    }
+    // Only register a swipe finger if we don't already have one tracked.
+    if (swipeIdRef.current !== null) return;
+    const t = e.changedTouches[0];
+    if (!t) return;
+    swipeIdRef.current = t.identifier;
+    swipeStartRef.current = { x: t.clientX, y: t.clientY };
+    swipeFiredRef.current = false;
   };
   const onWrapTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (!playing) return;
-    const rect = wrapRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    if (!playing || swipeFiredRef.current || !swipeStartRef.current) return;
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i]!;
-      if (t.identifier === leftIdRef.current && leftAnchorRef.current) {
-        const dy = t.clientY - rect.top - leftAnchorRef.current.y;
-        setLeftJoy({ x: leftAnchorRef.current.x, y: leftAnchorRef.current.y, dy });
-        const mag = Math.abs(dy);
-        if (mag < JOY_RESET) leftArmedRef.current = null;
-        else if (mag >= JOY_FIRE) {
-          const dir: 'up' | 'down' = dy < 0 ? 'up' : 'down';
-          if (leftArmedRef.current !== dir) {
-            leftArmedRef.current = dir;
-            if (dir === 'up') handleRef.current?.jump();
-            else handleRef.current?.slide();
-          }
-        }
-      } else if (t.identifier === rightIdRef.current && rightAnchorRef.current) {
-        const dx = t.clientX - rect.left - rightAnchorRef.current.x;
-        setRightJoy({ x: rightAnchorRef.current.x, y: rightAnchorRef.current.y, dx });
-        const mag = Math.abs(dx);
-        if (mag < JOY_RESET) rightArmedRef.current = null;
-        else if (mag >= JOY_FIRE) {
-          const dir: 'left' | 'right' = dx > 0 ? 'right' : 'left';
-          if (rightArmedRef.current !== dir) {
-            rightArmedRef.current = dir;
-            if (dir === 'right') handleRef.current?.moveRight();
-            else handleRef.current?.moveLeft();
-          }
-        }
-      }
+      if (t.identifier !== swipeIdRef.current) continue;
+      const dx = t.clientX - swipeStartRef.current.x;
+      const dy = t.clientY - swipeStartRef.current.y;
+      if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_FIRE) return;
+      // Dominant axis wins — clean discrete output even for diagonal swipes.
+      const dir =
+        Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy < 0 ? 'up' : 'down';
+      swipeFiredRef.current = true;
+      if (dir === 'right') handleRef.current?.moveRight();
+      else if (dir === 'left') handleRef.current?.moveLeft();
+      else if (dir === 'up') handleRef.current?.jump();
+      else handleRef.current?.slide();
+      return;
     }
   };
   const onWrapTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
     for (let i = 0; i < e.changedTouches.length; i++) {
       const t = e.changedTouches[i]!;
-      if (t.identifier === leftIdRef.current) {
-        leftIdRef.current = null;
-        leftAnchorRef.current = null;
-        leftArmedRef.current = null;
-        setLeftJoy(null);
-      } else if (t.identifier === rightIdRef.current) {
-        rightIdRef.current = null;
-        rightAnchorRef.current = null;
-        rightArmedRef.current = null;
-        setRightJoy(null);
+      if (t.identifier === swipeIdRef.current) {
+        swipeIdRef.current = null;
+        swipeStartRef.current = null;
+        swipeFiredRef.current = false;
+        return;
       }
     }
   };
@@ -574,7 +570,9 @@ export function RunnerCanvas() {
     const opts: RunnerOptions = {
       ...optsForAge(profileRef.current.ageBand),
       character: selectedDino,
-      view,
+      // Use the ROOM's view (set by the host) — every player races in the same camera so
+      // nobody gets a tactical advantage from a different perspective.
+      view: state.view,
       seed: state.seed,
       sfx: {
         jump: () => audio.jump(),
@@ -585,22 +583,34 @@ export function RunnerCanvas() {
         boost: () => audio.boost(),
       },
     };
-    handleRef.current = createRunner(
-      mountRef.current,
-      {
-        onUpdate: (s) => {
-          mpStatsRef.current = s;
-          onUpdate(s);
+    // Wrap createRunner so a WebGL/Three init failure surfaces in the lobby with a real
+    // message instead of dumping the player onto a silent blank canvas.
+    try {
+      handleRef.current = createRunner(
+        mountRef.current,
+        {
+          onUpdate: (s) => {
+            mpStatsRef.current = s;
+            onUpdate(s);
+          },
+          onGameOver: (distance, gems, durationSec) => {
+            mpRef.current?.finish();
+            mpRef.current?.stopPosLoop();
+            onGameOver(distance, gems, durationSec);
+          },
+          onRune: showRune,
         },
-        onGameOver: (distance, gems, durationSec) => {
-          mpRef.current?.finish();
-          mpRef.current?.stopPosLoop();
-          onGameOver(distance, gems, durationSec);
-        },
-        onRune: showRune,
-      },
-      opts,
-    );
+        opts,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to start the race renderer.';
+      // eslint-disable-next-line no-console
+      console.error('[runner] startMpRace createRunner failed:', err);
+      setMpError(msg);
+      setMpScreen('lobby');
+      setStarted(false);
+      return;
+    }
     // Seed in initial opponents (handler in the mpState effect will keep updating after this).
     const ops: RunnerOpponent[] = state.players
       .filter((p) => p.id !== state.myId)
@@ -646,6 +656,14 @@ export function RunnerCanvas() {
   function togglePause(next: boolean) {
     setPaused(next);
     handleRef.current?.setPaused(next);
+  }
+  // Resume from pause: hide the pause overlay, leave the runner paused, and start a 3-2-1
+  // countdown — the countdown tick effect unpauses the runner when it hits zero. Gives the
+  // player a fair beat to grab the controls after resuming.
+  function resumeWithCountdown() {
+    setPaused(false);
+    // runner is still paused from togglePause(true); the tick effect will unpause it.
+    setCountdownEnd(Date.now() + 3000);
   }
 
   // D-pad arrow buttons. `touch-manipulation` kills the 300ms tap-delay + double-tap zoom on
@@ -717,6 +735,24 @@ export function RunnerCanvas() {
           </button>
         </>
       )}
+
+      {/* 3-2-1 GO countdown — used both for the multiplayer race start (server "countdown"
+          phase) and the resume-from-pause grace period. While the overlay is up, the runner
+          is paused; the tick effect auto-resumes when the deadline passes. */}
+      {countdownEnd != null && (() => {
+        const remainingMs = countdownEnd - Date.now();
+        const n = Math.max(0, Math.ceil(remainingMs / 1000));
+        const label = remainingMs < 350 ? 'GO!' : String(n);
+        // `countdownTick` referenced to force re-render every 100ms
+        void countdownTick;
+        return (
+          <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-black/30 backdrop-blur-[2px]">
+            <div className={`text-[14rem] font-black leading-none text-white drop-shadow-2xl ${label === 'GO!' ? 'text-emerald-300' : ''}`}>
+              {label}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Rune reward — what you got from a smashed box */}
       {runeMsg && (
@@ -868,6 +904,9 @@ export function RunnerCanvas() {
                 <div className="rounded-2xl bg-white/10 px-6 py-3 ring-2 ring-white/30">
                   <p className="text-xs font-semibold uppercase tracking-wide text-white/70">Room code</p>
                   <p className="font-mono text-5xl font-black tracking-widest text-amber-200">{mpCode}</p>
+                  <p className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-white/60">
+                    Camera (host’s pick): {mpState.view === 'close' ? '🦖 Close' : '🎥 Follow'}
+                  </p>
                 </div>
 
                 <div className="flex w-full max-w-md flex-col gap-2">
@@ -984,7 +1023,7 @@ export function RunnerCanvas() {
           <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-3 px-8 py-6 text-center">
             <h2 className="text-2xl font-black">How to play</h2>
             <ul className="space-y-1.5 text-left text-sm">
-              <li>📱 Mobile / tablet: <b>drag ↑↓ on the LEFT</b> half (jump / slide) · <b>drag ◀▶ on the RIGHT</b> half (change lane) · tap 💥 (bottom-left) to smash.</li>
+              <li>📱 Mobile / tablet: <b>swipe ↑↓◀▶ anywhere</b> on the screen — up = jump, down = slide, left/right = change lane. Tap <b>💥 (bottom-left)</b> to smash.</li>
               <li>⌨️ Desktop: ←/→ switch lane · ↑/Space jump · ↓ slide · E smash · P pause</li>
               <li>🟫 Ground box → jump over OR land on top</li>
               <li>🟦 Flying bar → slide under (no jumping over)</li>
@@ -1031,12 +1070,11 @@ export function RunnerCanvas() {
         </div>
       )}
 
-      {/* Touch UI: two single-axis joysticks anchored on the wrap div + the 💥 button pinned
-          next to the vertical joystick area (bottom-left). The joystick disks render at the
-          finger's first touch point and disappear on release. */}
+      {/* Touch UI: swipe anywhere ↑↓◀▶ to move + 💥 button pinned bottom-left. The wrap div's
+          onTouchStart/Move/End above translate finger drags into discrete moves; the 💥 button
+          stops propagation so a tap on it never registers as a swipe. */}
       {playing && isCoarse && (
         <>
-          {/* 💥 button — touch-only, stops propagation so the wrap doesn't anchor a joystick here. */}
           <button
             type="button"
             className={`pointer-events-auto absolute bottom-4 left-4 z-20 select-none touch-manipulation rounded-full ${smashSize} font-bold backdrop-blur transition ${
@@ -1051,46 +1089,10 @@ export function RunnerCanvas() {
             💥
           </button>
 
-          {/* Vertical joystick (LEFT side) — drag ↑ to jump, ↓ to slide. */}
-          {leftJoy && (
-            <div
-              className="pointer-events-none absolute z-10"
-              style={{ left: leftJoy.x - 40, top: leftJoy.y - 70, width: 80, height: 140 }}
-            >
-              <div className="absolute inset-x-1 inset-y-0 rounded-full border-2 border-white/40 bg-white/10 backdrop-blur" />
-              <span className="absolute left-1/2 top-1 -translate-x-1/2 text-[11px] font-bold text-white/90 drop-shadow">↑ jump</span>
-              <span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-[11px] font-bold text-white/90 drop-shadow">↓ slide</span>
-              {(() => {
-                const cap = 58;
-                const cy = Math.max(-cap, Math.min(cap, leftJoy.dy));
-                return <div className="absolute left-1/2 h-8 w-8 -translate-x-1/2 rounded-full bg-white shadow-lg" style={{ top: 70 + cy - 16 }} />;
-              })()}
-            </div>
-          )}
-
-          {/* Horizontal joystick (RIGHT side) — drag ◀ ▶ to change lane. */}
-          {rightJoy && (
-            <div
-              className="pointer-events-none absolute z-10"
-              style={{ left: rightJoy.x - 70, top: rightJoy.y - 40, width: 140, height: 80 }}
-            >
-              <div className="absolute inset-x-0 inset-y-1 rounded-full border-2 border-white/40 bg-white/10 backdrop-blur" />
-              <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[11px] font-bold text-white/90 drop-shadow">◀</span>
-              <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[11px] font-bold text-white/90 drop-shadow">▶</span>
-              {(() => {
-                const cap = 58;
-                const cx = Math.max(-cap, Math.min(cap, rightJoy.dx));
-                return <div className="absolute top-1/2 h-8 w-8 -translate-y-1/2 rounded-full bg-white shadow-lg" style={{ left: 70 + cx - 16 }} />;
-              })()}
-            </div>
-          )}
-
-          {/* Idle hint — only when neither joystick is active. */}
-          {!leftJoy && !rightJoy && (
-            <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/30 px-3 py-1.5 text-xs font-semibold text-white/90 backdrop-blur">
-              ← drag ↑↓ for jump/slide · drag ◀▶ on the right for lanes →
-            </div>
-          )}
+          {/* Idle hint near the bottom-right — clears up once player makes a move. */}
+          <div className="pointer-events-none absolute bottom-4 right-4 rounded-full bg-black/30 px-3 py-1.5 text-xs font-semibold text-white/90 backdrop-blur">
+            swipe ↑↓◀▶ anywhere
+          </div>
         </>
       )}
 
@@ -1101,7 +1103,7 @@ export function RunnerCanvas() {
             <div className="text-5xl">⏸️</div>
             <h2 className="text-2xl font-black">Paused</h2>
             <div className="flex gap-3">
-              <button type="button" onClick={() => togglePause(false)} className="rounded-full bg-emerald-500 px-6 py-3 text-lg font-bold text-white hover:bg-emerald-600">
+              <button type="button" onClick={resumeWithCountdown} className="rounded-full bg-emerald-500 px-6 py-3 text-lg font-bold text-white hover:bg-emerald-600">
                 ▶ Resume
               </button>
               <button type="button" onClick={toMenu} className="rounded-full bg-white/20 px-6 py-3 text-lg font-bold text-white hover:bg-white/30">

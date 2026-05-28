@@ -158,9 +158,28 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   camera.position.set(0, 4.4, 8.5);
   camera.lookAt(0, 1.2, -8);
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  // WebGLRenderer construction can fail on machines with broken/disabled WebGL — wrap so
+  // the caller sees a real error instead of a silent blank canvas. Also clear the parent
+  // first: if a previous canvas was left behind (race conditions on remount), it would
+  // visually overlap the new one and cause the flicker some players report.
+  while (parent.firstChild && parent.firstChild instanceof HTMLCanvasElement) {
+    parent.removeChild(parent.firstChild);
+  }
+  let renderer: THREE.WebGLRenderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+  } catch (e) {
+    throw new Error('WebGL init failed — your browser may have hardware acceleration disabled. ' + (e instanceof Error ? e.message : ''));
+  }
+  // Safety net: if the GPU goes away (driver crash, tab backgrounded too long, etc.) Three
+  // can render to a stale context and produce a white canvas. Log it so devtools shows why.
+  renderer.domElement.addEventListener('webglcontextlost', (ev) => {
+    ev.preventDefault();
+    // eslint-disable-next-line no-console
+    console.error('[runner] WebGL context lost — reload the tab to recover.');
+  });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(parent.clientWidth, parent.clientHeight);
+  renderer.setSize(parent.clientWidth || window.innerWidth, parent.clientHeight || window.innerHeight);
   parent.appendChild(renderer.domElement);
 
   scene.add(new THREE.AmbientLight(0xffffff, 0.85));
@@ -570,6 +589,20 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     const t = clock.elapsedTime;
 
     if (speed < AUTO_CAP) speed = Math.min(speed + dt * ACCEL, AUTO_CAP); // auto only to AUTO_CAP
+
+    // Multiplayer same-lane catch-up drag. If a ghost dino is just ahead of me in MY lane,
+    // bleed speed so I don't visually phase through them. They naturally pull ahead (or I
+    // change lanes to overtake). Symmetrical with the laneBlocked() check on lane changes.
+    for (const op of opponentsLatest) {
+      if (op.finished) continue;
+      if (op.lane !== laneIndex) continue;
+      const gap = op.distance - distance; // positive = opponent ahead of me
+      if (gap > 0 && gap < 1.5) {
+        speed = Math.max(MIN_SPEED, speed - 12 * dt);
+        break; // one bump per frame is plenty
+      }
+    }
+
     distance += speed * dt;
     const dz = speed * dt;
 
@@ -894,21 +927,29 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     renderer.render(scene, camera);
   }
 
+  // Multiplayer: refuse a lane change if any opponent is in the target lane within ±2.5m.
+  // Returns true if blocked (no move). Keeps us from teleporting through ghost dinos.
+  function laneBlocked(targetLane: number): boolean {
+    for (const op of opponentsLatest) {
+      if (op.finished) continue;
+      if (op.lane !== targetLane) continue;
+      if (Math.abs(op.distance - distance) < 2.5) return true;
+    }
+    return false;
+  }
   const moveLeft = () => {
     if (over) return;
     const next = Math.max(0, laneIndex - 1);
-    if (next !== laneIndex) {
-      lastLane = laneIndex;
-      laneIndex = next;
-    }
+    if (next === laneIndex || laneBlocked(next)) return;
+    lastLane = laneIndex;
+    laneIndex = next;
   };
   const moveRight = () => {
     if (over) return;
     const next = Math.min(2, laneIndex + 1);
-    if (next !== laneIndex) {
-      lastLane = laneIndex;
-      laneIndex = next;
-    }
+    if (next === laneIndex || laneBlocked(next)) return;
+    lastLane = laneIndex;
+    laneIndex = next;
   };
   const jump = () => {
     if (!over && grounded && !jumping) {

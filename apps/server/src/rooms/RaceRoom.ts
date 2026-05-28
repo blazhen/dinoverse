@@ -65,6 +65,10 @@ export class RaceState extends Schema {
   declare seed: number; // all clients build the SAME track from this
   declare phase: 'lobby' | 'countdown' | 'racing' | 'finished';
   declare startsAt: number; // epoch ms the race begins (for the 3-2-1)
+  /** Camera view chosen by the room host (the first player). Everyone races in this view
+   *  so the experience is symmetric — a friend's local "Close" preference can't override
+   *  the host's "Follow" pick. */
+  declare view: string; // 'follow' | 'close'
   declare players: MapSchema<PlayerState>;
 
   constructor() {
@@ -72,6 +76,7 @@ export class RaceState extends Schema {
     this.seed = 0;
     this.phase = 'lobby';
     this.startsAt = 0;
+    this.view = 'follow';
     this.players = new MapSchema<PlayerState>();
   }
 }
@@ -79,6 +84,7 @@ defineTypes(RaceState, {
   seed: 'number',
   phase: 'string',
   startsAt: 'number',
+  view: 'string',
   players: { map: PlayerState },
 });
 
@@ -86,6 +92,8 @@ interface JoinOptions {
   name?: string;
   character?: string;
   code?: string;
+  /** Sent by every joiner; only honoured for the FIRST one (the host) — see onCreate. */
+  view?: string;
 }
 
 export class RaceRoom extends Room<RaceState> {
@@ -95,6 +103,8 @@ export class RaceRoom extends Room<RaceState> {
     this.setMetadata({ code: options.code ?? '' }); // friends-only: matched by invite code
     const state = new RaceState();
     state.seed = Math.floor(Math.random() * 1e9);
+    // First player's view becomes the room's view (locked in; later joiners can't change it).
+    state.view = options.view === 'close' ? 'close' : 'follow';
     this.setState(state);
 
     this.onMessage('ready', (client, ready: boolean) => {

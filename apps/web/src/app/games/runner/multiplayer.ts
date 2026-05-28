@@ -30,6 +30,7 @@ export interface MpState {
   seed: number;
   phase: MpPhase;
   startsAt: number; // epoch ms the race officially begins (after a 3s countdown)
+  view: 'follow' | 'close'; // camera view chosen by the room host — everyone races in this
   players: MpPlayer[];
   myId: string;
 }
@@ -58,6 +59,7 @@ interface RemoteState {
   seed: number;
   phase: MpPhase;
   startsAt: number;
+  view: string;
   players: { forEach(cb: (p: RemotePlayer) => void): void };
 }
 
@@ -113,7 +115,8 @@ function snapshot(state: RemoteState, myId: string): MpState {
       place: p.place,
     });
   });
-  return { seed: state.seed, phase: state.phase, startsAt: state.startsAt, players, myId };
+  const view = state.view === 'close' ? 'close' : 'follow';
+  return { seed: state.seed, phase: state.phase, startsAt: state.startsAt, view, players, myId };
 }
 
 export class Multiplayer {
@@ -125,9 +128,11 @@ export class Multiplayer {
     this.client = new Client(url);
   }
 
-  /** Create or join the room matching `code` (friends-only matchmaking via filterBy on server). */
-  async connect(code: string, name: string, character: DinoType, cb: MpCallbacks): Promise<void> {
-    const room = await this.client.joinOrCreate<RemoteState>('race', { code, name, character });
+  /** Create or join the room matching `code` (friends-only matchmaking via filterBy on server).
+   *  The `view` arg is the local player's pick; only honoured if THIS player creates the room
+   *  (i.e. is the host). Later joiners inherit the host's view. */
+  async connect(code: string, name: string, character: DinoType, view: 'follow' | 'close', cb: MpCallbacks): Promise<void> {
+    const room = await this.client.joinOrCreate<RemoteState>('race', { code, name, character, view });
     this.room = room;
     room.onStateChange((s) => cb.onState(snapshot(s, room.sessionId)));
     room.onLeave(() => cb.onLeave?.());
