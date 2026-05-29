@@ -469,13 +469,17 @@ export function RunnerCanvas() {
         else if (e.kind === 'pull') ghostStunnedRef.current.set(tid, nowMs + 600); // brief flash
       }
     }
-    // 3. Caster confirmation
+    // 3. Caster confirmation — show WHO we hit (target name) so the cast doesn't feel
+    //    anonymous. Thunder may have multiple targets; join them with commas.
     if (e.casterId === myId) {
       if (e.targetIds.length === 0) {
         showRune('🌫️ no target');
       } else {
-        const label = e.kind === 'freeze' ? '❄️ FROZE!' : e.kind === 'pull' ? '🕸️ PULLED!' : e.kind === 'thunder' ? '⚡ THUNDER!' : '📦 DROPPED!';
-        showRune(label);
+        const verb = e.kind === 'freeze' ? '❄️ FROZE' : e.kind === 'pull' ? '🕸️ PULLED' : e.kind === 'thunder' ? '⚡ ZAPPED' : '📦 DROPPED';
+        const names = e.targetIds
+          .map((tid) => state?.players.find((p) => p.id === tid)?.name ?? 'someone')
+          .join(', ');
+        showRune(`${verb} ${names}`);
       }
       return;
     }
@@ -832,8 +836,11 @@ export function RunnerCanvas() {
       }
       handleRef.current?.showAbilityBeam('self', t.id, beamColor);
     }
-    const label = kind === 'freeze' ? '❄️ FROZE!' : kind === 'pull' ? '🕸️ PULLED!' : '⚡ THUNDER!';
-    showRune(label);
+    // Cast popup names the target(s) so the player sees what they actually hit — not
+    // just a generic verb. Thunder may have multiple; join with commas.
+    const verb = kind === 'freeze' ? '❄️ FROZE' : kind === 'pull' ? '🕸️ PULLED' : '⚡ ZAPPED';
+    const names = targets.map((t) => t.name).join(', ');
+    showRune(`${verb} ${names}`);
     pushFeed({
       kind,
       casterName: 'YOU',
@@ -2068,10 +2075,18 @@ export function RunnerCanvas() {
       {/* Touch UI: swipe anywhere = move · tap anywhere = smash · ⚡ ability button bottom-left.
           The ⚡ button stops touch propagation so its tap never registers as a smash.
           The 💥 smash indicator sits right above the ⚡ button so both action gauges are
-          in the player's peripheral vision. */}
+          in the player's peripheral vision.
+
+          Bottom offset uses `max(5rem, env(safe-area-inset-bottom) + 4rem)` so on iPhone
+          Safari — where the persistent URL bar and home-indicator gesture area eat the
+          bottom ~80px and refuse the fullscreen API — the button still clears the chrome.
+          On notched iPhones the safe-area inset adds even more clearance automatically. */}
       {playing && isCoarse && (
         <>
-          <div className="absolute bottom-4 left-4 z-20 flex flex-col items-center gap-1.5">
+          <div
+            className="absolute left-4 z-20 flex flex-col items-center gap-1.5"
+            style={{ bottom: 'max(5rem, calc(env(safe-area-inset-bottom, 0px) + 4rem))' }}
+          >
             <SmashIndicator breakReady={stats.breakReady} progress={stats.breakCooldownProgress} />
             <button
               type="button"
@@ -2087,8 +2102,12 @@ export function RunnerCanvas() {
             </button>
           </div>
 
-          {/* Idle hint — clears up once player makes a move. */}
-          <div className="pointer-events-none absolute bottom-4 right-4 rounded-full bg-black/30 px-3 py-1.5 text-xs font-semibold text-white/90 backdrop-blur">
+          {/* Idle hint — clears up once player makes a move. Matches the ability button's
+              raised offset so the bottom-row UI stays aligned and clear of Safari chrome. */}
+          <div
+            className="pointer-events-none absolute right-4 rounded-full bg-black/30 px-3 py-1.5 text-xs font-semibold text-white/90 backdrop-blur"
+            style={{ bottom: 'max(5rem, calc(env(safe-area-inset-bottom, 0px) + 4rem))' }}
+          >
             swipe ↑↓◀▶ to move · tap = smash
           </div>
         </>

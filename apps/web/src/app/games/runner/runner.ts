@@ -337,10 +337,42 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   // Spawns more rarely than gold so a cast feels earned. Doesn't grant a rune; the ability
   // IS the reward.
   const abilityBoxes: { mesh: THREE.Mesh; lane: number }[] = [];
-  // Ability beams: short-lived line segments rendered between caster and target during
-  // a cast. Each entry stores its world endpoints + lifetime; the loop fades opacity.
-  interface AbilityBeam { line: THREE.Line; mat: THREE.LineBasicMaterial; life: number; max: number }
-  const abilityBeams: AbilityBeam[] = [];
+  // Ability projectiles: glowing emissive orbs that VISIBLY TRAVEL from caster to target
+  // along a gentle arc, dragging a colored trail line behind them; on arrival they spawn a
+  // colored particle burst. Endpoints are re-evaluated every frame (by player/opponent id)
+  // so the orb tracks moving rivals rather than aiming at a stale snapshot. Color is set
+  // by the caller (canvas) per ability kind.
+  interface AbilityProjectile {
+    sphere: THREE.Mesh;
+    sphereGeo: THREE.SphereGeometry;
+    sphereMat: THREE.MeshStandardMaterial;
+    trailLine: THREE.Line;
+    trailMat: THREE.LineBasicMaterial;
+    trailGeo: THREE.BufferGeometry;
+    fromId: string | 'self';
+    toId: string | 'self';
+    life: number; // seconds remaining (travel + fade)
+    travelTime: number; // seconds for the travel phase (orb in flight)
+    totalLife: number;
+    burstSpawned: boolean;
+    color: number;
+    /** Snapshots used if the id no longer resolves mid-flight (target left the room). */
+    startSnap: THREE.Vector3;
+    endSnap: THREE.Vector3;
+  }
+  const abilityProjectiles: AbilityProjectile[] = [];
+  /** Color-keyed cache of burst-particle materials. One per ability color so a Freeze
+   *  burst is blue, a Thunder burst is yellow, etc. — without leaking a fresh material
+   *  per projectile. All disposed at destroy(). */
+  const burstMatCache = new Map<number, THREE.MeshBasicMaterial>();
+  function burstMatFor(color: number): THREE.MeshBasicMaterial {
+    let m = burstMatCache.get(color);
+    if (!m) {
+      m = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.95 });
+      burstMatCache.set(color, m);
+    }
+    return m;
+  }
   // Trex Leave-Box. The canvas pushes the latest snapshot in `setDroppedBoxes` each frame.
   // We keep a local Map<id, mesh> so we can ADD new ones / REMOVE consumed ones lazily
   // without re-creating everything per frame. Local "tripped" set avoids re-firing
@@ -403,15 +435,24 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   // ignored. `stunSpeedCapUntilLocal` caps the runner to MIN_SPEED for a brief window.
   let frozenUntilLocal = 0;
   let stunSpeedCapUntilLocal = 0;
-  // Post-hit speed recovery — when the player gets hit (box collision OR pull-from-rival)
-  // they shouldn't restart from MIN_SPEED via the slow auto-accel; that's brutal at high
-  // speeds. Instead: SLOW PHASE for `HIT_SLOW_S` seconds, THEN rapid recovery toward
-  // `preHitSpeed` at `HIT_RECOVERY_ACCEL`. Once they hit pre-hit speed, normal slow
-  // auto-accel takes over.
-  const HIT_SLOW_S = 2;
-  const HIT_RECOVERY_ACCEL = 22; // ~70 km/h restored in just over 1s after slow phase
+  // Post-hit speed recovery — applies to EVERY slowdown event: box collision (heart hit),
+  // PvP Pull, PvP Freeze, PvP Thunder, Trex Water/Trap boxes. Pattern:
+  //   • SLOW PHASE — speed clamped low until the original effect ends (freeze 2s, stun
+  //     1.5s, etc.). hitSlowUntil tracks when the slow phase ends.
+  //   • RECOVERY PHASE — ~5s ramp from MIN back to the speed they had BEFORE the hit
+  //     (capped at AUTO_CAP). Stops the "every hit resets you to crawl" feeling.
+  // `preHitSpeed` is captured at the START of the first slowdown and preserved across
+  // chained effects (don't overwrite during a hitSlow window so back-to-back hits don't
+  // erase the original speed).
+  const HIT_RECOVERY_ACCEL = 4; // units/sec ramp — covers ~13.4 units (MIN→AUTO_CAP) in ~3-4s
   let hitSlowUntil = 0;
   let preHitSpeed = 0;
+  /** Capture pre-slowdown speed if we're not already in a slowdown window, and extend
+   *  the slow phase to `until`. Called by every effect that should trigger recovery. */
+  function startSlowdownPhase(until: number) {
+    if (clock.elapsedTime >= hitSlowUntil) preHitSpeed = speed;
+    if (until > hitSlowUntil) hitSlowUntil = until;
+  }
   let comboCount = 0; // consecutive coins (for the multiplier)
   let comboUntil = 0; // the coin streak ends if none collected by this time
   let shakeUntil = 0; // camera shakes until this time (on hit)
@@ -707,12 +748,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       return;
     }
     hearts -= 1;
-    // Remember the speed we had before the hit so the recovery phase can ramp us back
-    // up to it quickly (instead of slowly auto-accelerating from MIN_SPEED). Only update
-    // preHitSpeed if it's a fresh hit — back-to-back hits stack on the lower value.
-    if (clock.elapsedTime >= hitSlowUntil) preHitSpeed = speed;
-    speed = Math.max(MIN_SPEED, speed * 0.4); // bigger drop (≈60%) so the slow phase actually feels slow
-    hitSlowUntil = clock.elapsedTime + HIT_SLOW_S;
+    // Heart-loss hit: 2s slow phase + ramp-up recovery via the shared helper.
+    startSlowdownPhase(clock.elapsedTime + 2);
+    speed = Math.max(MIN_SPEED, speed * 0.4); // big drop (≈60%) so the slow phase feels slow
     invulnUntil = clock.elapsedTime + 1.3;
     shakeUntil = clock.elapsedTime + 0.3; // screen shake
     opts.sfx?.hit?.();
@@ -1149,15 +1187,20 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         if (!isMine && sameLane && Math.abs(zRel) < 1.0 + dz) {
           trippedBoxIds.add(b.id);
           cb.onDroppedBoxCollision?.(b.id, b.type);
-          // Local immediate effect mirror so the player feels it before server-roundtrip:
-          // server still has the final say + broadcasts to others.
+          // Local immediate effect mirror so the player feels it before server-roundtrip;
+          // server still has the final say + broadcasts to others. Every effect routes
+          // through startSlowdownPhase so recovery ramps speed back up afterwards.
           if (b.type === 'trap') {
-            frozenUntilLocal = t + 1.5;
+            const endsAt = t + 1.5;
+            startSlowdownPhase(endsAt);
+            frozenUntilLocal = Math.max(frozenUntilLocal, endsAt);
           } else if (b.type === 'water') {
-            stunSpeedCapUntilLocal = t + 2;
+            const endsAt = t + 2;
+            startSlowdownPhase(endsAt);
+            stunSpeedCapUntilLocal = Math.max(stunSpeedCapUntilLocal, endsAt);
             speed = Math.min(speed, MIN_SPEED + 1);
           } else if (b.type === 'fire') {
-            hit(); // -1 heart; server also decrements authoritatively
+            hit(); // -1 heart; server also decrements authoritatively (hit() handles recovery)
           }
           scene.remove(entry.mesh);
           droppedBoxMeshes.delete(b.id);
@@ -1278,18 +1321,65 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       p.mesh.position.z += p.vz * dt + dz; // drift back with the world
       p.mesh.scale.setScalar(0.4 + (p.life / p.max) * 0.8);
     }
-    // Ability beams: fade opacity over their lifetime, then dispose.
-    for (let i = abilityBeams.length - 1; i >= 0; i--) {
-      const b = abilityBeams[i]!;
-      b.life -= dt;
-      if (b.life <= 0) {
-        scene.remove(b.line);
-        b.line.geometry.dispose();
-        b.mat.dispose();
-        abilityBeams.splice(i, 1);
+    // Ability projectiles — glowing orb travels caster→target, then bursts on arrival.
+    // Endpoints are re-resolved every frame so the orb tracks a moving target rather
+    // than aiming at the position it had at cast time (rivals can run several metres
+    // during the ~0.45s travel, and a snapshotted endpoint would visibly lag behind).
+    for (let i = abilityProjectiles.length - 1; i >= 0; i--) {
+      const p = abilityProjectiles[i]!;
+      p.life -= dt;
+      if (p.life <= 0) {
+        scene.remove(p.sphere);
+        scene.remove(p.trailLine);
+        p.sphereGeo.dispose();
+        p.sphereMat.dispose();
+        p.trailGeo.dispose();
+        p.trailMat.dispose();
+        abilityProjectiles.splice(i, 1);
         continue;
       }
-      b.mat.opacity = 0.9 * (b.life / b.max);
+      const elapsed = p.totalLife - p.life;
+      // Live endpoint lookup; fall back to the snapshot if a player has since left.
+      const cur = abilityResolveBeamPos(p.fromId) ?? p.startSnap;
+      const tgt = abilityResolveBeamPos(p.toId) ?? p.endSnap;
+      if (elapsed < p.travelTime) {
+        // Travel phase — interpolate along a sine arc so the orb FEELS like it's
+        // flying, not sliding. Trail line stretches from current caster pos to the orb.
+        const k = elapsed / p.travelTime; // 0 → 1
+        const arc = Math.sin(k * Math.PI) * 0.9; // peaks ~0.9 units above the straight line
+        p.sphere.position.x = cur.x + (tgt.x - cur.x) * k;
+        p.sphere.position.y = cur.y + (tgt.y - cur.y) * k + arc;
+        p.sphere.position.z = cur.z + (tgt.z - cur.z) * k;
+        p.sphere.scale.setScalar(1 + Math.sin(elapsed * 28) * 0.12); // subtle pulse so it shimmers
+        p.trailGeo.setFromPoints([cur, p.sphere.position.clone()]);
+      } else {
+        // Arrival — one-time particle burst at the target, then a brief glow fade.
+        if (!p.burstSpawned) {
+          p.burstSpawned = true;
+          const mat = burstMatFor(p.color);
+          for (let j = 0; j < 14; j++) {
+            const m = new THREE.Mesh(particleGeo, mat);
+            m.position.copy(tgt);
+            scene.add(m);
+            particles.push({
+              mesh: m,
+              vx: (Math.random() - 0.5) * 5,
+              vy: 2 + Math.random() * 4,
+              vz: (Math.random() - 0.5) * 5,
+              life: 0.45,
+              max: 0.45,
+            });
+          }
+        }
+        // Lock to target + fade & expand the orb so the impact reads as a flash.
+        const fadeWindow = Math.max(0.001, p.totalLife - p.travelTime);
+        const fadeT = Math.max(0, p.life / fadeWindow); // 1 → 0
+        p.sphereMat.opacity = fadeT;
+        p.trailMat.opacity = 0.85 * fadeT;
+        p.sphere.position.copy(tgt);
+        p.sphere.scale.setScalar(1 + (1 - fadeT) * 2);
+        p.trailGeo.setFromPoints([cur, tgt]);
+      }
     }
 
     if (t - lastHud > 0.12) {
@@ -1405,19 +1495,26 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   };
 
   // ── PvP receivers (called by the canvas when this player is hit by an opponent) ───
-  /** Freeze: block all inputs for `durationMs`. Used by Stego's Freeze Shot. */
+  /** Freeze: block all inputs for `durationMs`. Used by Stego's Freeze Shot + Trap box.
+   *  Starts the shared slowdown phase so recovery ramps speed back to pre-effect value
+   *  after the freeze ends (instead of slow auto-accel from MIN). */
   const applyFreeze = (durationMs: number) => {
     if (over) return;
-    frozenUntilLocal = clock.elapsedTime + durationMs / 1000;
+    const endsAt = clock.elapsedTime + durationMs / 1000;
+    startSlowdownPhase(endsAt);
+    frozenUntilLocal = Math.max(frozenUntilLocal, endsAt);
     shakeUntil = clock.elapsedTime + 0.3;
     opts.sfx?.hit?.();
     emit();
   };
-  /** Stun: brief speed cap + screen shake. Used by Brachio's Thunder (AoE). */
+  /** Stun: brief speed cap + screen shake. Used by Brachio's Thunder + Water box.
+   *  Same recovery wiring as Freeze. */
   const applyStun = (durationMs: number) => {
     if (over) return;
-    stunSpeedCapUntilLocal = clock.elapsedTime + durationMs / 1000;
-    speed = Math.min(speed, MIN_SPEED + 1); // hard slow down for the duration
+    const endsAt = clock.elapsedTime + durationMs / 1000;
+    startSlowdownPhase(endsAt);
+    stunSpeedCapUntilLocal = Math.max(stunSpeedCapUntilLocal, endsAt);
+    speed = Math.min(speed, MIN_SPEED + 1); // hard slow for the duration
     shakeUntil = clock.elapsedTime + 0.3;
     opts.sfx?.hit?.();
     emit();
@@ -1435,26 +1532,63 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     emit();
   };
 
-  /** Render a short-lived line between two players for an ability cast. `fromOpId` /
-   *  `toOpId` use 'self' for the local player or an opponent id. The runner converts
-   *  to local 3D coordinates (lane.x, dino head ≈ y=1, distance-relative z). */
+  /** Live-resolve a beam endpoint to local 3D coords. 'self' → the local player's
+   *  current position; opponent id → looked up in `opponentsLatest`. Returns null if
+   *  the id has gone away (so the projectile loop can fall back to the snapshot). */
+  function abilityResolveBeamPos(id: string | 'self'): THREE.Vector3 | null {
+    if (id === 'self') return new THREE.Vector3(player.position.x, 1, player.position.z);
+    const op = opponentsLatest.find((o) => o.id === id);
+    if (!op) return null;
+    const lane = Math.min(2, Math.max(0, op.lane | 0));
+    const dz2 = op.distance - distance;
+    return new THREE.Vector3(LANES[lane]!, op.y + 1, -dz2);
+  }
+
+  /** Spawn a glowing orb that VISIBLY TRAVELS from caster to target along a gentle
+   *  arc, with a colored trail and an arrival burst — replaces the old static beam
+   *  so players actually see the spell fly. `fromOpId` / `toOpId` use 'self' for
+   *  the local player or an opponent id. Endpoints are re-evaluated each frame, so
+   *  the orb tracks the target through their movement during travel. */
   const showAbilityBeam = (fromOpId: string | 'self', toOpId: string | 'self', color: number) => {
-    function pos(id: string | 'self'): THREE.Vector3 | null {
-      if (id === 'self') return new THREE.Vector3(player.position.x, 1, player.position.z);
-      const op = opponentsLatest.find((o) => o.id === id);
-      if (!op) return null;
-      const lane = Math.min(2, Math.max(0, op.lane | 0));
-      const dz2 = op.distance - distance;
-      return new THREE.Vector3(LANES[lane]!, op.y + 1, -dz2);
-    }
-    const a = pos(fromOpId);
-    const b = pos(toOpId);
-    if (!a || !b) return;
-    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9, linewidth: 2 });
-    const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
-    const line = new THREE.Line(geo, mat);
-    scene.add(line);
-    abilityBeams.push({ line, mat, life: 0.4, max: 0.4 });
+    const start = abilityResolveBeamPos(fromOpId);
+    const end = abilityResolveBeamPos(toOpId);
+    if (!start || !end) return;
+    // Bright emissive orb — visible against any biome background.
+    const sphereGeo = new THREE.SphereGeometry(0.34, 16, 12);
+    const sphereMat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 1.4,
+      transparent: true,
+      opacity: 1,
+    });
+    const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+    sphere.position.copy(start);
+    scene.add(sphere);
+    // Trail — a tinted line from caster to the orb that grows as the orb flies.
+    const trailMat = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.85 });
+    const trailGeo = new THREE.BufferGeometry().setFromPoints([start.clone(), start.clone()]);
+    const trailLine = new THREE.Line(trailGeo, trailMat);
+    scene.add(trailLine);
+    const travelTime = 0.45; // seconds the orb spends in flight
+    const totalLife = travelTime + 0.35; // + brief post-arrival fade
+    abilityProjectiles.push({
+      sphere,
+      sphereGeo,
+      sphereMat,
+      trailLine,
+      trailMat,
+      trailGeo,
+      fromId: fromOpId,
+      toId: toOpId,
+      life: totalLife,
+      travelTime,
+      totalLife,
+      burstSpawned: false,
+      color,
+      startSnap: start.clone(),
+      endSnap: end.clone(),
+    });
   };
 
   const onKey = (e: KeyboardEvent) => {
@@ -1495,12 +1629,17 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         g.nameMat.dispose();
       }
       ghosts.clear();
-      for (const b of abilityBeams) {
-        scene.remove(b.line);
-        b.line.geometry.dispose();
-        b.mat.dispose();
+      for (const p of abilityProjectiles) {
+        scene.remove(p.sphere);
+        scene.remove(p.trailLine);
+        p.sphereGeo.dispose();
+        p.sphereMat.dispose();
+        p.trailGeo.dispose();
+        p.trailMat.dispose();
       }
-      abilityBeams.length = 0;
+      abilityProjectiles.length = 0;
+      for (const m of burstMatCache.values()) m.dispose();
+      burstMatCache.clear();
       dino.dispose();
       magnetIconMat.map?.dispose();
       magnetIconMat.dispose();
