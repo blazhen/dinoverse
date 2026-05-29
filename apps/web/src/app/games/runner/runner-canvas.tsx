@@ -309,10 +309,18 @@ export function RunnerCanvas() {
       castPlayerAbilityOnBots(kind);
       handleRef.current?.consumeAbilityCharge();
     } else {
-      // Pure solo: held ability becomes a local boost (see runner.ts castAbility).
+      // Pure solo — ability boxes don't spawn here, so this branch is normally
+      // unreachable. Kept as a safety so a stale held ability still consumes with
+      // a label that names the kind (no more "THUNDER → MAGNET" mismatch).
       handleRef.current?.useAbility();
     }
   }
+  // Mirror fireAbility into a ref so the keydown listener (registered with
+  // deps [started, over, paused]) always invokes the LATEST closure — without
+  // this, the Q-key handler would capture the fireAbility from when those state
+  // values last changed, with a stale `stats.heldAbility` snapshot.
+  const fireAbilityRef = useRef<() => void>(() => {});
+  fireAbilityRef.current = fireAbility;
 
   // ── Multiplayer flow ────────────────────────────────────────────────────────
   // openMultiplayer auto-hosts a new room so the user can immediately copy an invite link.
@@ -969,13 +977,25 @@ export function RunnerCanvas() {
     };
   }, []);
 
-  // Desktop: P pauses/resumes (handled here so the overlay + runner stay in sync).
+  // Desktop keyboard for canvas-owned actions:
+  //   P — pause/resume (overlay + runner stay in sync)
+  //   Q — fire ⚡ ability. Q used to be wired inside runner.ts which called the
+  //   local `castAbility` fallback directly — that path had hard-coded consolation
+  //   labels (THUNDER→"MAGNET", FREEZE→"SHIELD", etc.) and skipped bot/MP routing,
+  //   so pressing Q in a bot race fired the wrong effect. We now go through
+  //   `fireAbility` (the same function the on-screen ⚡ button calls) so bot and MP
+  //   modes route through `castPlayerAbilityOnBots` / `mpRef.ability` correctly.
+  //   The ref pattern keeps the handler pointed at the latest `fireAbility` closure
+  //   without re-registering the listener on every render (avoids a stale
+  //   `stats.heldAbility` reading what was held two presses ago).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.key === 'p' || e.key === 'P') && started && !over) {
         const next = !paused;
         setPaused(next);
         handleRef.current?.setPaused(next);
+      } else if ((e.key === 'q' || e.key === 'Q') && !e.repeat && started && !over && !paused) {
+        fireAbilityRef.current();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1486,6 +1506,14 @@ export function RunnerCanvas() {
   // "Playing" = a run is active. Used to gate the joystick handlers + touchAction so that the
   // menu / how-to / pause / game-over overlays scroll natively on landscape phones.
   const playing = started && !over && !paused && !showHowTo;
+  // "Has opponents" = there's at least one rival to use abilities on (MP race with ≥2 players
+  // or any bot race). Ability boxes only spawn in this case (see runner.ts spawnRow), and the
+  // ⚡ button is hidden when false so pure-solo players aren't confused by a button that does
+  // nothing. mpScreen is state; botModeRef is a ref but `playing` causes frequent re-renders
+  // (stats updates ~10Hz), so the check stays current without extra state machinery.
+  const hasOpponents =
+    (mpScreen === 'race' && (mpState?.players.length ?? 0) > 1) ||
+    (botModeRef.current != null && botsRef.current.length > 0);
   // Reusable scroll-overlay shell (fixed-to-viewport so heights don't depend on the wrap div
   // chain, with iOS momentum scroll + overscroll containment for predictable touch panning).
   const scrollShellStyle: React.CSSProperties = { WebkitOverflowScrolling: 'touch', touchAction: 'auto' };
@@ -2051,15 +2079,19 @@ export function RunnerCanvas() {
           </div>
           <div className="flex flex-col items-center gap-1">
             <SmashIndicator breakReady={stats.breakReady} progress={stats.breakCooldownProgress} />
-            <button
-              type="button"
-              className={`${abilityClasses} ${abilitySize}`}
-              style={abilityStyle}
-              onPointerDown={fireAbility}
-              aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
-            >
-              {abilityIcon}
-            </button>
+            {/* ⚡ button is PvP-only — hidden in pure solo since ability boxes don't spawn
+                without opponents to use them on. */}
+            {hasOpponents && (
+              <button
+                type="button"
+                className={`${abilityClasses} ${abilitySize}`}
+                style={abilityStyle}
+                onPointerDown={fireAbility}
+                aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
+              >
+                {abilityIcon}
+              </button>
+            )}
           </div>
           <div className="flex gap-2">
             <button type="button" className={dpadBtn} onPointerDown={() => handleRef.current?.slide()} aria-label="Slide">
@@ -2088,18 +2120,23 @@ export function RunnerCanvas() {
             style={{ bottom: 'max(5rem, calc(env(safe-area-inset-bottom, 0px) + 4rem))' }}
           >
             <SmashIndicator breakReady={stats.breakReady} progress={stats.breakCooldownProgress} />
-            <button
-              type="button"
-              className={`${abilityClasses} ${abilitySize}`}
-              style={abilityStyle}
-              onTouchStart={(e) => {
-                e.stopPropagation();
-                fireAbility();
-              }}
-              aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
-            >
-              {abilityIcon}
-            </button>
+            {/* ⚡ button is PvP-only — hidden in pure solo since ability boxes don't spawn
+                without opponents to use them on. The smash indicator above stays — smash
+                is useful for golden boxes regardless of mode. */}
+            {hasOpponents && (
+              <button
+                type="button"
+                className={`${abilityClasses} ${abilitySize}`}
+                style={abilityStyle}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                  fireAbility();
+                }}
+                aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
+              >
+                {abilityIcon}
+              </button>
+            )}
           </div>
 
           {/* Idle hint — clears up once player makes a move. Matches the ability button's

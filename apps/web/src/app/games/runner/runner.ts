@@ -594,7 +594,12 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     // Rare Ability Box — 1-tap smash → full ⚡ charge. ~6% per row so they're a treat.
     // Picks a lane that has NO obstacle/breakable/crate at the same z (within 1m) so it
     // never spawns visually inside another box. If every lane is taken in this row, skip.
-    if (rng() < 0.06) {
+    //
+    // PvP-only: only spawns when there's at least one opponent (MP player or bot) to
+    // use the ability on. In pure solo we suppress them entirely so the player isn't
+    // handed a held ability whose name (e.g. "THUNDER") can't possibly match what
+    // firing it does (there's nobody to zap). The ⚡ button is hidden in solo too.
+    if (opponentsLatest.length > 0 && rng() < 0.06) {
       const occupied = new Set<number>();
       for (const o of obstacles) {
         if (Math.abs(o.mesh.position.z - z) < 1.0) occupied.add(o.lane);
@@ -1453,43 +1458,33 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   };
 
   // ── Ability ────────────────────────────────────────────────────────────────────
-  // Each dino has a signature ability fired by the charged-up ⚡ button. Charge fills
-  // from gem pickups + successful smashes; reaches 1.0 → button is ready. Using it
-  // burns the full charge, so it's a power-spike reward for playing well rather than
-  // a constant-on advantage.
+  // ⚡ button fires the held PvP ability. In MP and bot mode the canvas routes the
+  // cast through the server / bot simulator and calls `consumeAbilityCharge` — this
+  // local `castAbility` doesn't run.
+  //
+  // It only runs as a defensive fallback in PURE SOLO. We don't normally spawn
+  // ability boxes in solo (spawnRow gates on opponents), so this should rarely fire;
+  // if it does (edge case — e.g. leftover state across a mode switch), we just
+  // consume the held ability and label the popup with the picked-up kind so it
+  // doesn't lie about what was used. Previously this path had "consolation" labels
+  // (THUNDER → "MAGNET", FREEZE → "SHIELD", etc.) which felt like a bug to players
+  // who saw their cast popup name a different ability than the one they picked up.
   //
   // Named `castAbility` (not `useAbility`) so ESLint's react-hooks/rules-of-hooks
-  // doesn't flag the call inside `onKey` — that rule treats any `use*` identifier as
-  // a hook. The handle still exposes it under `useAbility` for a clean public API.
+  // doesn't flag the call inside `onKey` — that rule treats any `use*` identifier
+  // as a hook. The handle still exposes it under `useAbility` for a clean public API.
   const castAbility = () => {
     if (over || paused || isFrozen()) return;
-    if (!heldAbility) return; // nothing to cast
+    if (!heldAbility) return;
     const kind = heldAbility;
     heldAbility = null;
     abilityCharge = 0;
-    const t = clock.elapsedTime;
-    // SOLO local fallback: with no opponents to actually hit, the held ability becomes
-    // a personal boost so the player still gets a reward for the box pickup. In MP /
-    // bot mode the canvas overrides this (sending the ability to server / bots and
-    // calling consumeAbilityCharge instead) — this branch never runs there.
-    if (kind === 'freeze') {
-      shieldActive = true;
-      invulnUntil = t + 4;
-      cb.onRune?.('🛡️ SHIELD');
-    } else if (kind === 'thunder') {
-      magnetUntil = t + 8;
-      gemCount += 10;
-      cb.onRune?.('🧲 MAGNET');
-    } else if (kind === 'box') {
-      hearts = Math.min(5, hearts + 1);
-      cb.onRune?.('❤️ +1 HEART');
-    } else {
-      // pull → solo "turbo"
-      speed += 22 / 3.6;
-      invulnUntil = t + 3;
-      cb.onRune?.('⚡ TURBO');
-    }
-    opts.sfx?.boost?.();
+    const label =
+      kind === 'freeze' ? '❄️ FREEZE' :
+      kind === 'pull' ? '🕸️ PULL' :
+      kind === 'thunder' ? '⚡ THUNDER' :
+      '📦 BOX';
+    cb.onRune?.(label);
     opts.sfx?.rune?.();
     emit();
   };
@@ -1598,7 +1593,10 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     else if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W' || e.key === ' ') jump();
     else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') slide();
     else if ((e.key === 'e' || e.key === 'E') && !e.repeat) breakBox();
-    else if ((e.key === 'q' || e.key === 'Q') && !e.repeat) castAbility();
+    // Q (⚡ ability) is intentionally NOT handled here — the canvas owns it so the
+    // bot/MP routing (castPlayerAbilityOnBots / mpRef.ability) runs instead of this
+    // file's local-only `castAbility` consolation fallback (which would show e.g.
+    // "MAGNET" when the player picked up "THUNDER"). See runner-canvas.tsx.
   };
   window.addEventListener('keydown', onKey);
 
