@@ -200,12 +200,14 @@ export class RaceRoom extends Room<RaceState> {
         this.broadcast('ability', { kind, casterId: me.id, targetIds: [], boxType: type });
         return;
       }
-      // Collect rivals AHEAD of caster (within 60m so it feels like a "shot," not a missile).
+      // Collect ALL rivals ahead of caster — no range cap. Selection below decides
+      // between "deterministic closest visible (~25m)" and "weighted random among the
+      // rest". Fizzle only if literally nobody is ahead.
       const ahead: PlayerState[] = [];
       this.state.players.forEach((p) => {
         if (p.id === client.sessionId || p.finished) return;
         const gap = p.distance - me.distance; // positive = ahead
-        if (gap > 0 && gap < 60) ahead.push(p);
+        if (gap > 0) ahead.push(p);
       });
       if (ahead.length === 0) {
         this.broadcast('ability', { kind, casterId: me.id, targetIds: [] });

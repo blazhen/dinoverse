@@ -58,7 +58,28 @@ function lsDino(): DinoType {
   return 'trik';
 }
 
-const EMPTY_STATS: RunnerStats = { distance: 0, gems: 0, hearts: 3, shield: false, magnet: false, speed: 0, breakReady: true, combo: 1, lane: 1, y: 0, abilityCharge: 0 };
+const EMPTY_STATS: RunnerStats = { distance: 0, gems: 0, hearts: 3, shield: false, magnet: false, speed: 0, breakReady: true, breakCooldownProgress: 1, combo: 1, lane: 1, y: 0, abilityCharge: 0, heldAbility: null };
+
+/** Smash-cooldown gauge — sits above the ⚡ ability button so both action gauges are
+ *  in the player's peripheral vision. Same conic-gradient pattern as the ability fill
+ *  so the visual language is consistent. */
+function SmashIndicator({ breakReady, progress }: { breakReady: boolean; progress: number }) {
+  const SMASH_CD_S = 1.2; // mirrors BREAK_COOLDOWN_S in runner.ts
+  const p = Math.max(0, Math.min(1, progress));
+  const remainingS = (1 - p) * SMASH_CD_S;
+  const ringStyle: React.CSSProperties = breakReady
+    ? { background: '#fbbf24' }
+    : { background: `conic-gradient(from -90deg, #fbbf24 ${p * 360}deg, rgba(255,255,255,0.12) ${p * 360}deg)` };
+  return (
+    <div className={`pointer-events-none inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-bold backdrop-blur ${breakReady ? 'bg-amber-400/20 text-amber-200' : 'bg-black/50 text-white/80'}`}>
+      <span className="relative inline-flex h-7 w-7 items-center justify-center rounded-full" style={ringStyle}>
+        <span className="absolute inset-1 rounded-full bg-slate-900/85" />
+        <span className={`relative ${breakReady ? '' : 'opacity-60'}`}>💥</span>
+      </span>
+      <span className="whitespace-nowrap">{breakReady ? 'Ready' : `${remainingS.toFixed(1)}s`}</span>
+    </div>
+  );
+}
 
 const DINOS: { id: DinoType; label: string }[] = [
   { id: 'trik', label: '🕸️ Trik' },
@@ -86,6 +107,7 @@ interface Bot {
   abilityReadyAt: number; // epoch-ms — earliest moment to fire next ability
   frozenUntil: number; // own immobilise state (set by other players' Freeze / Trap)
   stunSpeedCapUntil: number; // own slow state (set by Thunder / Water)
+  jumpEndsAt: number; // epoch-ms — when current jump animation ends; 0 = not jumping
 }
 
 interface BotProfile {
@@ -181,6 +203,11 @@ export function RunnerCanvas() {
   // Tracks epoch-ms when we're vulnerable again, keyed by casterId.
   const HIT_GRACE_MS = 500;
   const hitGraceRef = useRef<Map<string, number>>(new Map());
+  // PvP visual state for OTHER players (not just us) — when we hear an ability event in
+  // MP we mark target ghosts as frozen/stunned for the effect duration so the local
+  // ghost tint reflects what landed on them. Cleared when the timer elapses.
+  const ghostFrozenRef = useRef<Map<string, number>>(new Map()); // id → frozenUntil epoch-ms
+  const ghostStunnedRef = useRef<Map<string, number>>(new Map()); // id → stunnedUntil epoch-ms
 
   // ── Bot AI state ────────────────────────────────────────────────────────────
   // botSetup, when non-null during a run, drives the local-only bot simulation. The
@@ -194,6 +221,16 @@ export function RunnerCanvas() {
   const botBoxesRef = useRef<{ id: string; ownerId: string; type: 'water' | 'fire' | 'trap'; lane: number; distance: number }[]>([]);
   const botTickRef = useRef<number | null>(null);
   const botModeRef = useRef<{ difficulty: BotDifficulty } | null>(null);
+  // setInterval captures closure values at call time → state changes (paused, countdown)
+  // don't propagate into tickBots. Mirror them to refs so the tick sees the latest values.
+  const pausedRef = useRef(false);
+  const countdownEndRef = useRef<number | null>(null);
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
+  useEffect(() => {
+    countdownEndRef.current = countdownEnd;
+  }, [countdownEnd]);
   const PLAYER_SELF_ID = 'self'; // synthetic id used for the local player in bot mode
   // Kill-feed: rolling log of who cast what on whom. Max 4 visible, each fades after 3s.
   // Structured (not HTML) so player names render through React's normal escaping — no XSS.
@@ -247,35 +284,32 @@ export function RunnerCanvas() {
   // player breaks an Ability Box (see runner.ts). In multiplayer the ability is a PvP
   // shot — we tell the server which kind based on the local dino, the server picks the
   // target, broadcasts an event, and the target's client applies the effect locally.
-  function abilityKindForDino(d: DinoType): AbilityKind {
-    if (d === 'stego') return 'freeze';
-    if (d === 'brachio') return 'thunder';
-    if (d === 'trex') return 'box';
-    return 'pull'; // trik / default
+  // Random ability system: the dino no longer determines the cast — the box does.
+  // `stats.heldAbility` (from runner.ts) tells us which one is queued, if any.
+  function abilityIconFor(kind: AbilityKind | null): string {
+    if (kind === 'freeze') return '❄️';
+    if (kind === 'thunder') return '⚡';
+    if (kind === 'box') return '📦';
+    if (kind === 'pull') return '🕸️';
+    return '⚡'; // empty — placeholder glyph; the dim style tells the player it's not ready
   }
-  // Glyph shown on the ⚡ button so each dino's signature ability reads at a glance.
-  function abilityIconForDino(d: DinoType): string {
-    if (d === 'stego') return '❄️';
-    if (d === 'brachio') return '⚡';
-    if (d === 'trex') return '📦';
-    return '🕸️'; // trik / default
-  }
-  const abilityIcon = abilityIconForDino(selectedDino);
+  const abilityIcon = abilityIconFor(stats.heldAbility);
   function fireAbility() {
-    if (stats.abilityCharge < 1) {
+    const kind = stats.heldAbility;
+    if (!kind) {
       showCharging();
       return;
     }
     if (mpScreen === 'race' && mpRef.current) {
       // Multiplayer: server picks targets + broadcasts back via onAbility.
-      mpRef.current.ability(abilityKindForDino(selectedDino));
+      mpRef.current.ability(kind);
       handleRef.current?.consumeAbilityCharge();
     } else if (botModeRef.current && botsRef.current.length > 0) {
       // Solo-vs-bots: targets bots locally (visible-first / weighted-random).
-      castPlayerAbilityOnBots();
+      castPlayerAbilityOnBots(kind);
       handleRef.current?.consumeAbilityCharge();
     } else {
-      // Pure solo: per-dino local boost defined inside runner.ts castAbility.
+      // Pure solo: held ability becomes a local boost (see runner.ts castAbility).
       handleRef.current?.useAbility();
     }
   }
@@ -422,10 +456,18 @@ export function RunnerCanvas() {
     // 2. Visual beam(s) — colour-coded by ability kind. From caster → each target.
     //    'self' resolves on the runner side via the locally-known dino position.
     const beamColor = e.kind === 'freeze' ? 0x60a5fa : e.kind === 'pull' ? 0xef4444 : e.kind === 'thunder' ? 0xfde047 : 0xa78bfa;
+    const nowMs = Date.now();
     for (const tid of e.targetIds) {
       const from: string | 'self' = e.casterId === myId ? 'self' : e.casterId;
       const to: string | 'self' = tid === myId ? 'self' : tid;
       handleRef.current?.showAbilityBeam(from, to, beamColor);
+      // Mark target ghosts so their dinos render with the right tint locally — this
+      // also runs for the caster's screen so YOU see your spell land visibly.
+      if (tid !== myId) {
+        if (e.kind === 'freeze') ghostFrozenRef.current.set(tid, nowMs + 2000);
+        else if (e.kind === 'thunder') ghostStunnedRef.current.set(tid, nowMs + 1500);
+        else if (e.kind === 'pull') ghostStunnedRef.current.set(tid, nowMs + 600); // brief flash
+      }
     }
     // 3. Caster confirmation
     if (e.casterId === myId) {
@@ -490,6 +532,26 @@ export function RunnerCanvas() {
     if (!handleRef.current) return;
     const mode = botModeRef.current;
     if (!mode) return;
+    // Bots wait through the 3-2-1 countdown AND through any pause — otherwise they
+    // sprint ahead while the player is staring at "3, 2, 1". Still sync mesh
+    // positions at the current values so they appear at the spawn-spread positions.
+    const inCountdown = countdownEndRef.current != null && Date.now() < countdownEndRef.current;
+    if (pausedRef.current || inCountdown) {
+      const ops: RunnerOpponent[] = botsRef.current.map((b) => ({
+        id: b.id,
+        name: b.name,
+        character: b.character,
+        distance: b.distance,
+        lane: b.lane,
+        y: b.y,
+        finished: b.finished,
+        frozen: Date.now() < b.frozenUntil,
+        stunned: Date.now() < b.stunSpeedCapUntil,
+      }));
+      handleRef.current.setOpponents(ops);
+      handleRef.current.setDroppedBoxes(botBoxesRef.current);
+      return;
+    }
     const profile = BOT_PROFILES[mode.difficulty];
     const now = Date.now();
     const playerDistance = mpStatsRef.current.distance;
@@ -518,18 +580,37 @@ export function RunnerCanvas() {
         bot.speed = Math.min(profile.baseSpeed + bot.speed * 0.001, bot.speed + dt * 2);
       }
 
-      // Lane change decision (every ~2-4s). Smartness biases toward player's lane.
+      // Lane change decision. Slower cadence + only 1-step changes (no teleporting from
+      // lane 0 to lane 2 in one tick) so bots read as deliberate rather than jittery.
       if (now > bot.laneChangeAt) {
-        let target = bot.lane;
-        if (Math.random() < 0.55) {
+        if (Math.random() < 0.4) {
+          let target = bot.lane;
           if (Math.random() < profile.laneSmartness && playerAlive) {
-            target = playerLane; // try to crowd the player
+            // Step toward the player's lane by one (not snap).
+            if (playerLane > bot.lane) target = bot.lane + 1;
+            else if (playerLane < bot.lane) target = bot.lane - 1;
           } else {
-            target = Math.floor(Math.random() * 3);
+            // Random ±1 step (or stay).
+            target = bot.lane + (Math.random() < 0.5 ? -1 : 1);
           }
+          bot.lane = Math.max(0, Math.min(2, target));
         }
-        bot.lane = Math.max(0, Math.min(2, target));
-        bot.laneChangeAt = now + 1500 + Math.random() * 2500;
+        bot.laneChangeAt = now + 2200 + Math.random() * 2500;
+      }
+      // Random jumps so bots look alive instead of gliding on rails. Triggered while
+      // grounded; the y position is recomputed each frame from a half-sine curve until
+      // jumpEndsAt elapses.
+      if (bot.jumpEndsAt === 0 && Math.random() < 0.012) {
+        bot.jumpEndsAt = now + 600; // 600ms jump arc
+      }
+      if (bot.jumpEndsAt > 0) {
+        if (now >= bot.jumpEndsAt) {
+          bot.y = 0;
+          bot.jumpEndsAt = 0;
+        } else {
+          const progress = 1 - (bot.jumpEndsAt - now) / 600;
+          bot.y = Math.sin(progress * Math.PI) * 1.6; // peak ~1.6, returns to 0
+        }
       }
 
       // Charge the bot's ability (about 20s solo / faster in hard).
@@ -589,13 +670,18 @@ export function RunnerCanvas() {
       lane: b.lane,
       y: b.y,
       finished: b.finished,
+      frozen: now < b.frozenUntil,
+      stunned: now < b.stunSpeedCapUntil,
     }));
     handleRef.current.setOpponents(ops);
     handleRef.current.setDroppedBoxes(botBoxesRef.current);
   }
 
+  // Bots also draw from the same random pool every cast (matching the player's
+  // "Ability Box gives a random one of the 4" model). No per-character mapping.
+  const BOT_ABILITY_POOL: AbilityKind[] = ['pull', 'freeze', 'thunder', 'box'];
   function castBotAbility(bot: Bot, profile: BotProfile, playerAlive: boolean) {
-    const kind = abilityKindForDino(bot.character);
+    const kind = BOT_ABILITY_POOL[Math.floor(Math.random() * BOT_ABILITY_POOL.length)]!;
     const now = Date.now();
 
     // Trex — drop a box ahead of self instead of targeting.
@@ -681,9 +767,9 @@ export function RunnerCanvas() {
 
   // Player fires their ability in bot-mode → target bots locally (mirrors what the
   // server does in MP). Visible-first deterministic pick; otherwise weighted-random
-  // toward the leader (same algorithm as RaceRoom).
-  function castPlayerAbilityOnBots() {
-    const kind = abilityKindForDino(selectedDino);
+  // toward the leader (same algorithm as RaceRoom). `kind` is whatever the player has
+  // currently held (random per Ability Box pickup).
+  function castPlayerAbilityOnBots(kind: AbilityKind) {
     const playerDistance = mpStatsRef.current.distance;
     const now = Date.now();
 
@@ -781,6 +867,7 @@ export function RunnerCanvas() {
   useEffect(() => {
     mpStateRef.current = mpState;
     if (!mpState || !handleRef.current) return;
+    const now = Date.now();
     const ops: RunnerOpponent[] = mpState.players
       .filter((p) => p.id !== mpState.myId)
       .map((p) => ({
@@ -791,6 +878,10 @@ export function RunnerCanvas() {
         lane: p.lane,
         y: p.y,
         finished: p.finished,
+        // Pull the local frozen/stunned-until timestamps from the maps we populated in
+        // handleAbilityEvent. Expired entries are treated as not-set.
+        frozen: (ghostFrozenRef.current.get(p.id) ?? 0) > now,
+        stunned: (ghostStunnedRef.current.get(p.id) ?? 0) > now,
       }));
     handleRef.current.setOpponents(ops);
     handleRef.current.setDroppedBoxes(mpState.boxes);
@@ -1138,30 +1229,37 @@ export function RunnerCanvas() {
     if (botSetup && botSetup.count > 0) startBots(botSetup);
   }
 
-  // Build the bot roster + start the 10Hz tick. Bots start ~5m ahead of the player so
-  // they're immediately visible on the leaderboard but easy to catch.
+  // Build the bot roster + start the 10Hz tick. Bots spawn LATERALLY around the player
+  // (left/right lanes — never stacked in the centre lane on top of you) and only a
+  // few metres staggered forward/back so they're all visible on screen from the gun.
   function startBots(setup: { count: number; difficulty: BotDifficulty }) {
     const profile = BOT_PROFILES[setup.difficulty];
     const names = pickBotNames(setup.count);
     const dinos = pickBotDinos(setup.count, selectedDino);
     const now = Date.now();
+    // Player is at lane 1 (centre) by default. Bots go into the side lanes first; if
+    // we run out of side slots they go back into centre but BEHIND the player so
+    // they're not clipping the player's own dino model.
+    const BOT_LANES = [0, 2, 0, 2]; // left, right, left, right
+    const BOT_DIST_OFFSETS = [2, 2, -2, -2]; // first two ahead, then behind
     const bots: Bot[] = [];
     for (let i = 0; i < setup.count; i++) {
       bots.push({
         id: `bot_${i}_${now.toString(36)}`,
         name: names[i]!,
         character: dinos[i]!,
-        distance: 4 + i * 2, // small starting spread
-        lane: 1,
+        distance: BOT_DIST_OFFSETS[i] ?? 0,
+        lane: BOT_LANES[i] ?? 0,
         y: 0,
         speed: profile.baseSpeed + (Math.random() * 2 - 1) * profile.speedVariance,
         hearts: 3,
         finished: false,
-        laneChangeAt: now + 1000 + Math.random() * 2000,
+        laneChangeAt: now + 1500 + Math.random() * 2000,
         abilityCharge: 0,
         abilityReadyAt: now + 4000 + Math.random() * 4000,
         frozenUntil: 0,
         stunSpeedCapUntil: 0,
+        jumpEndsAt: 0,
       });
     }
     botsRef.current = bots;
@@ -1202,6 +1300,15 @@ export function RunnerCanvas() {
     }
     const { createRunner } = await import('./runner');
     if (!mountRef.current || handleRef.current) return;
+    // Spawn-spread: each player gets a unique starting lane + small distance offset
+    // based on their join order (index in the players list). Keeps everyone off the
+    // centre spawn so the first second of a race doesn't have 4 dinos clipping through
+    // one another. Pattern cycles lane: 1 / 0 / 2 / 1 — centre, left, right, centre.
+    const myIndex = Math.max(0, state.players.findIndex((p) => p.id === state.myId));
+    const SPAWN_LANES = [1, 0, 2, 1];
+    const startLane = SPAWN_LANES[myIndex % SPAWN_LANES.length]!;
+    const startDistance = myIndex * 4; // 0, 4, 8, 12 — visible spread without giving anyone a head-start to be sore about
+
     const opts: RunnerOptions = {
       ...optsForAge(profileRef.current.ageBand),
       character: selectedDino,
@@ -1209,6 +1316,8 @@ export function RunnerCanvas() {
       // nobody gets a tactical advantage from a different perspective.
       view: state.view,
       seed: state.seed,
+      startLane,
+      startDistance,
       sfx: {
         jump: () => audio.jump(),
         coin: () => audio.coin(),
@@ -1268,6 +1377,14 @@ export function RunnerCanvas() {
   }
 
   function playAgain() {
+    // Multiplayer: "Play again" used to restart in the SAME room while the rest of the
+    // race was still going — which dumped the player into mid-race ghosts they couldn't
+    // catch up to. Instead, leave the room entirely + return to the menu. The player
+    // can then start a fresh solo run or host a new race.
+    if (mpScreen === 'race') {
+      toMenu();
+      return;
+    }
     setOver(false);
     setPaused(false);
     setStats(EMPTY_STATS);
@@ -1343,7 +1460,10 @@ export function RunnerCanvas() {
   const abilitySize = isCoarse ? 'px-7 py-5 text-3xl' : 'px-5 py-4 text-2xl';
   const abilityFull = stats.abilityCharge >= 1;
   const abilityDeg = Math.max(0, Math.min(1, stats.abilityCharge)) * 360;
-  const abilityClasses = `touch-manipulation pointer-events-auto select-none relative rounded-full font-bold transition ${
+  // NOTE: do NOT include a `position` utility (relative/absolute) here — the mobile button
+  // adds `absolute bottom-4 left-4` and they'd collide in the cascade, leaving the button
+  // off-screen. Position is owned by each call-site.
+  const abilityClasses = `touch-manipulation pointer-events-auto select-none rounded-full font-bold transition ${
     abilityFull
       ? 'text-slate-900 ring-4 ring-amber-200 animate-pulse'
       : 'text-white/70 border-2 border-dashed border-white/30'
@@ -1409,6 +1529,11 @@ export function RunnerCanvas() {
           )}
           <button type="button" onClick={toggleFullscreen} className={`${pillBtn} absolute right-3 top-[6.5rem]`}>
             {isFs ? '✕' : '⛶'}
+          </button>
+          {/* Quit-to-menu button — visible during play so mobile users (where the page
+              chrome's "← Games" link is hidden) always have a one-tap exit. Confirms first. */}
+          <button type="button" onClick={requestQuit} className={`${pillBtn} absolute right-3 top-[9rem]`}>
+            🏠 Menu
           </button>
         </>
       )}
@@ -1780,19 +1905,77 @@ export function RunnerCanvas() {
         </div>
       )}
 
-      {/* Live leaderboard during a race — shows everyone's distance in real time. */}
-      {playing && mpScreen === 'race' && mpState && (
-        <div className="pointer-events-none absolute right-3 top-32 z-10 rounded-xl bg-black/40 px-3 py-2 text-xs font-bold text-white backdrop-blur">
-          <p className="mb-1 text-white/70">🏁 Race</p>
-          {[...mpState.players]
-            .sort((a, b) => b.distance - a.distance)
-            .map((p, i) => (
-              <div key={p.id} className={p.id === mpState.myId ? 'text-amber-200' : 'text-white/90'}>
-                {i + 1}. {p.name}: {Math.floor(p.distance)}m {p.finished && '🏁'}
+      {/* Mini-map — vertical bar on the left. YOU sit at the centre line; rivals appear
+          above (ahead) or below (behind) at their relative distance. Range is ±50m
+          (anyone further is pinned to the edge). Visible in MP and bot mode whenever
+          there are rivals to track. */}
+      {playing && (() => {
+        const MAP_RANGE_M = 50; // metres above + below the centre line
+        type Marker = { id: string; gap: number; isMe: boolean };
+        const myDist = stats.distance;
+        const markers: Marker[] = [];
+        if (mpScreen === 'race' && mpState) {
+          for (const p of mpState.players) {
+            const isMe = p.id === mpState.myId;
+            markers.push({ id: p.id, gap: p.distance - myDist, isMe });
+          }
+        } else if (botModeRef.current && botsRef.current.length > 0) {
+          markers.push({ id: 'self', gap: 0, isMe: true });
+          for (const b of botsRef.current) markers.push({ id: b.id, gap: b.distance - myDist, isMe: false });
+        }
+        if (markers.length < 2) return null;
+        return (
+          <div className="pointer-events-none absolute left-3 top-32 z-10 h-56 w-10 rounded-xl bg-black/40 ring-1 ring-white/15 backdrop-blur">
+            {/* centre line (you are here) */}
+            <div className="absolute inset-x-1.5 top-1/2 h-px bg-white/25" />
+            {/* labels */}
+            <div className="absolute -top-4 left-1/2 -translate-x-1/2 text-[10px] font-semibold text-white/60">↑ {MAP_RANGE_M}m</div>
+            <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[10px] font-semibold text-white/60">↓ {MAP_RANGE_M}m</div>
+            {markers.map((m) => {
+              const clamped = Math.max(-MAP_RANGE_M, Math.min(MAP_RANGE_M, m.gap));
+              // gap > 0 = rival is ahead → top half (lower top%). gap < 0 = behind → bottom half.
+              const topPct = 50 - (clamped / MAP_RANGE_M) * 50;
+              return (
+                <div
+                  key={m.id}
+                  className={`absolute left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full ${
+                    m.isMe ? 'bg-amber-400 ring-2 ring-white' : 'bg-white shadow'
+                  }`}
+                  style={{ top: `${topPct}%` }}
+                />
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      {/* Live leaderboard during a race — shows everyone's distance in real time. Same
+          panel for MP and bot mode. In MP rows come from the synced room state; in bot
+          mode we build them from botsRef + the local player stats. */}
+      {playing && (() => {
+        type Row = { id: string; name: string; distance: number; finished: boolean; isMe: boolean };
+        let rows: Row[] = [];
+        if (mpScreen === 'race' && mpState) {
+          rows = mpState.players.map((p) => ({ id: p.id, name: p.name, distance: p.distance, finished: p.finished, isMe: p.id === mpState.myId }));
+        } else if (botModeRef.current && botsRef.current.length > 0) {
+          rows = [
+            { id: PLAYER_SELF_ID, name: 'YOU', distance: stats.distance, finished: over, isMe: true },
+            ...botsRef.current.map((b) => ({ id: b.id, name: b.name, distance: b.distance, finished: b.finished, isMe: false })),
+          ];
+        }
+        if (rows.length < 2) return null;
+        rows.sort((a, b) => b.distance - a.distance);
+        return (
+          <div className="pointer-events-none absolute right-3 top-32 z-10 rounded-xl bg-black/40 px-3 py-2 text-xs font-bold text-white backdrop-blur">
+            <p className="mb-1 text-white/70">🏁 Race</p>
+            {rows.map((r, i) => (
+              <div key={r.id} className={r.isMe ? 'text-amber-200' : 'text-white/90'}>
+                {i + 1}. {r.isMe ? 'YOU' : r.name}: {Math.floor(r.distance)}m {r.finished && '🏁'}
               </div>
             ))}
-        </div>
-      )}
+          </div>
+        );
+      })()}
 
       {/* PvP kill-feed — most-recent at the top, fades after 3s. Sits just under the
           leaderboard so the player can see who's casting what at a glance. Names render
@@ -1830,10 +2013,12 @@ export function RunnerCanvas() {
               <li>⌨️ Desktop: ←/→ lane · ↑/Space jump · ↓ slide · <b>E smash</b> · <b>Q ⚡ ability</b> · P pause</li>
               <li>🟫 Ground box → jump over OR land on top · 🟦 Flying bar → slide under</li>
               <li>Tap once on 🟨 gold for a rune. 📦 crates need <b>two fast taps</b> → 🎰 JACKPOT.</li>
-              <li><b>⚡ Ability Box</b> (purple) — tap once to get a charged ability. After firing, find another box to charge again. In multiplayer your ability targets a rival:</li>
-              <li className="pl-4">⚡ Trik: <b>Web Pull</b> — yanks the rival ahead of you back, costs them ❤️.</li>
-              <li className="pl-4">🛡️ Stego: <b>Freeze Shot</b> — locks the rival in place for 2 seconds.</li>
-              <li className="pl-4">🔭 Brachio: <b>Thunder</b> — stuns ALL rivals ahead of you for 1.5 seconds.</li>
+              <li><b>⚡ Ability Box</b> (purple) — tap once. You get a <b>random</b> ability (every dino can hold any of them). After firing, find another box. The button icon shows what you currently hold:</li>
+              <li className="pl-4">🕸️ <b>Web Pull</b> — yanks the rival ahead of you back, costs them ❤️.</li>
+              <li className="pl-4">❄️ <b>Freeze Shot</b> — locks the rival in place for 2 seconds.</li>
+              <li className="pl-4">⚡ <b>Thunder</b> — stuns ALL rivals ahead of you for 1.5 seconds.</li>
+              <li className="pl-4">📦 <b>Leave Box</b> — drops a random 📦/💧/🔥 box behind you for rivals to run through.</li>
+              <li>🗺️ Tiny mini-map on the left shows rivals above (ahead) and below (behind) you.</li>
               <li>💎 Coins chain into a 🔥 combo. ⚡ ground boosts add km/h.</li>
               <li>🤖 <b>Race vs Bots</b> from the menu — 1-3 bots, three difficulty tiers. Hard-mode bots will target YOU too.</li>
               <li>❤️ Don&apos;t lose all your hearts!</li>
@@ -1857,15 +2042,18 @@ export function RunnerCanvas() {
               ▶
             </button>
           </div>
-          <button
-            type="button"
-            className={`${abilityClasses} ${abilitySize}`}
-            style={abilityStyle}
-            onPointerDown={fireAbility}
-            aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
-          >
-            {abilityIcon}
-          </button>
+          <div className="flex flex-col items-center gap-1">
+            <SmashIndicator breakReady={stats.breakReady} progress={stats.breakCooldownProgress} />
+            <button
+              type="button"
+              className={`${abilityClasses} ${abilitySize}`}
+              style={abilityStyle}
+              onPointerDown={fireAbility}
+              aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
+            >
+              {abilityIcon}
+            </button>
+          </div>
           <div className="flex gap-2">
             <button type="button" className={dpadBtn} onPointerDown={() => handleRef.current?.slide()} aria-label="Slide">
               ▼
@@ -1878,21 +2066,26 @@ export function RunnerCanvas() {
       )}
 
       {/* Touch UI: swipe anywhere = move · tap anywhere = smash · ⚡ ability button bottom-left.
-          The ⚡ button stops touch propagation so its tap never registers as a smash. */}
+          The ⚡ button stops touch propagation so its tap never registers as a smash.
+          The 💥 smash indicator sits right above the ⚡ button so both action gauges are
+          in the player's peripheral vision. */}
       {playing && isCoarse && (
         <>
-          <button
-            type="button"
-            className={`${abilityClasses} absolute bottom-4 left-4 z-20 ${abilitySize}`}
-            style={abilityStyle}
-            onTouchStart={(e) => {
-              e.stopPropagation();
-              fireAbility();
-            }}
-            aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
-          >
-            {abilityIcon}
-          </button>
+          <div className="absolute bottom-4 left-4 z-20 flex flex-col items-center gap-1.5">
+            <SmashIndicator breakReady={stats.breakReady} progress={stats.breakCooldownProgress} />
+            <button
+              type="button"
+              className={`${abilityClasses} ${abilitySize}`}
+              style={abilityStyle}
+              onTouchStart={(e) => {
+                e.stopPropagation();
+                fireAbility();
+              }}
+              aria-label={abilityFull ? 'Use ability' : `Ability ${Math.round(stats.abilityCharge * 100)}%`}
+            >
+              {abilityIcon}
+            </button>
+          </div>
 
           {/* Idle hint — clears up once player makes a move. */}
           <div className="pointer-events-none absolute bottom-4 right-4 rounded-full bg-black/30 px-3 py-1.5 text-xs font-semibold text-white/90 backdrop-blur">
@@ -1963,9 +2156,74 @@ export function RunnerCanvas() {
                 Best: {best}m{bestTime > 0 && <> · ⏱ {fmtTime(bestTime)}</>}
               </p>
             )}
+
+            {/* Multiplayer final standings — sorted by distance, highlight YOU, medal the
+                top 3. "✓ done" = that player has also game-over'd; otherwise they're still
+                racing. Re-renders when mpState updates so live distances stay current. */}
+            {mpScreen === 'race' && mpState && mpState.players.length > 1 && (() => {
+              const ranked = [...mpState.players].sort((a, b) => b.distance - a.distance);
+              return (
+                <div className="mt-2 w-full max-w-sm rounded-2xl bg-black/40 px-4 py-3 ring-2 ring-white/15">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-white/70">🏁 Standings</p>
+                  <ul className="flex flex-col gap-1.5 text-sm">
+                    {ranked.map((p, i) => {
+                      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+                      const isMe = p.id === mpState.myId;
+                      return (
+                        <li
+                          key={p.id}
+                          className={`flex items-center justify-between rounded-xl px-3 py-1.5 ${
+                            isMe ? 'bg-amber-400/20 ring-1 ring-amber-300/60 font-bold' : 'bg-white/5'
+                          }`}
+                        >
+                          <span>
+                            {medal} {isMe ? 'YOU' : p.name}
+                          </span>
+                          <span className="text-white/80">
+                            {Math.floor(p.distance)}m{' '}
+                            {p.finished ? <span className="text-emerald-300">✓</span> : <span className="text-xs text-white/50">…running</span>}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })()}
+
+            {/* Solo-vs-bots final standings — same shape, sourced from local botsRef. */}
+            {botModeRef.current && botsRef.current.length > 0 && (() => {
+              const myDist = finalScore.distance;
+              const all = [
+                ...botsRef.current.map((b) => ({ name: b.name, isMe: false, distance: b.distance, finished: b.finished })),
+                { name: 'YOU', isMe: true, distance: myDist, finished: true },
+              ].sort((a, b) => b.distance - a.distance);
+              return (
+                <div className="mt-2 w-full max-w-sm rounded-2xl bg-black/40 px-4 py-3 ring-2 ring-white/15">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-white/70">🤖 Standings</p>
+                  <ul className="flex flex-col gap-1.5 text-sm">
+                    {all.map((p, i) => {
+                      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
+                      return (
+                        <li
+                          key={`${p.name}_${i}`}
+                          className={`flex items-center justify-between rounded-xl px-3 py-1.5 ${
+                            p.isMe ? 'bg-amber-400/20 ring-1 ring-amber-300/60 font-bold' : 'bg-white/5'
+                          }`}
+                        >
+                          <span>{medal} {p.name}</span>
+                          <span className="text-white/80">{Math.floor(p.distance)}m</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              );
+            })()}
+
             <div className="mt-1 flex gap-3">
               <button type="button" onClick={playAgain} className="rounded-full bg-emerald-500 px-6 py-3 text-lg font-bold text-white hover:bg-emerald-600">
-                ▶ Play again
+                {mpScreen === 'race' ? '🚪 Leave race' : '▶ Play again'}
               </button>
               <button type="button" onClick={toMenu} className="rounded-full bg-white/20 px-6 py-3 text-lg font-bold text-white hover:bg-white/30">
                 🏠 Menu

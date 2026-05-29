@@ -34,13 +34,23 @@ export interface RunnerStats {
   shield: boolean;
   magnet: boolean;
   speed: number; // current run speed in internal units/sec
-  breakReady: boolean; // legacy: now always true (smash has no cooldown)
+  breakReady: boolean; // true when the smash cooldown has expired and a tap will register
+  /** Cooldown progress 0..1. 1 = fully ready (next tap will smash). 0 = just hit cooldown
+   *  (~1.2s wait). The HUD indicator uses this to draw a filling progress ring + countdown
+   *  so the player can see exactly when the next smash will land. */
+  breakCooldownProgress: number;
   combo: number; // coin combo multiplier (1 = none)
   lane: number; // 0/1/2 — exposed for multiplayer position broadcast
   y: number; // vertical offset (0 = ground) — exposed for multiplayer
-  /** Ability charge 0..1. Fills from collecting gems + smashing boxes; at 1.0 the
-   *  ⚡ ability button is ready. Using the ability resets to 0. */
+  /** Ability charge 0..1. 0 = no held ability, 1 = one held + ready to fire. Filled
+   *  by breaking an Ability Box. With the random-ability redesign this is binary, but
+   *  the UI still uses it for the conic-gradient fill so anything in between is
+   *  treated as "in transit" (currently unused). */
   abilityCharge: number;
+  /** The random ability currently held (set when an Ability Box is broken). All dinos
+   *  can hold any kind — character no longer determines what you fire. Null = no ability
+   *  held; the on-screen button is empty. */
+  heldAbility: 'pull' | 'freeze' | 'thunder' | 'box' | null;
 }
 export interface RunnerCallbacks {
   onUpdate: (s: RunnerStats) => void;
@@ -61,6 +71,11 @@ export interface RunnerOptions {
   /** Seeded PRNG seed. If set, the track layout is deterministic — required for multiplayer
    *  so every client builds the identical obstacle stream. Omit for solo (uses Math.random). */
   seed?: number;
+  /** Optional starting distance offset (meters). Used in MP to stagger spawns so players
+   *  don't pile up at z=0. Default 0. */
+  startDistance?: number;
+  /** Optional starting lane (0/1/2). Spreads spawns laterally in MP. Default 1 (center). */
+  startLane?: number;
 }
 
 // Public shape used by the multiplayer leaderboard. The race wrapper hands these in via
@@ -73,6 +88,12 @@ export interface RunnerOpponent {
   lane: number;
   y: number;
   finished?: boolean;
+  /** Visual hint: this opponent is currently affected by a Freeze (or Trap box). The
+   *  runner tints their ghost icy-blue so the caster can SEE the cast landed. */
+  frozen?: boolean;
+  /** Visual hint: this opponent is currently affected by a Thunder stun (or Water box).
+   *  Tints their ghost amber/yellow. */
+  stunned?: boolean;
 }
 
 /** A Trex-dropped box in shared MP state. The canvas hands the latest list in via
@@ -182,6 +203,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   const AUTO_CAP = 70 / 3.6; // auto-speed climbs to 70 km/h; ⚡ boosts can still push past
   const MIN_SPEED = 6; // floor after collision penalties (~22 km/h)
   const VIEW: RunnerView = opts.view ?? 'follow';
+  // Initial lane — MP can stagger these so players don't pile on top of each other at
+  // spawn. Clamped to 0/1/2. Used both for the first frame setup AND reset().
+  const initLane = Math.max(0, Math.min(2, opts.startLane ?? 1));
   // Seeded RNG drives obstacle / pickup spawn so multiplayer clients share the same track.
   // Local visuals (particles, camera shake, rune choice) keep Math.random — they don't need
   // to match across clients.
@@ -276,6 +300,7 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   dino.root.rotation.y = Math.PI; // face away from the camera (running forward, into -z)
   dino.play('run');
   player.add(dino.root);
+  player.position.x = LANES[initLane]!; // honour optional startLane on first frame
   scene.add(player);
 
   // A shield bubble around the player when shielded — sized to the dino, not the old box.
@@ -343,12 +368,14 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   };
   // Multiplayer ghost dinos — one entry per remote racer, keyed by their server-side id.
   // `freshlySpawned` flips false after the first frame so we snap to position on creation
-  // but interpolate every frame after, eliminating the 10Hz network-update jitter.
-  const ghosts = new Map<string, { dino: DinoCharacter; group: THREE.Group; nameSprite: THREE.Sprite; nameMat: THREE.SpriteMaterial; freshlySpawned: boolean }>();
+  // but interpolate every frame after. `lastAnim` lets us avoid calling `dino.play(name)`
+  // every frame for the same anim (some rigs reset the playhead on each play() call,
+  // freezing the "run" cycle to frame 0 — that's why ghosts looked static).
+  const ghosts = new Map<string, { dino: DinoCharacter; group: THREE.Group; nameSprite: THREE.Sprite; nameMat: THREE.SpriteMaterial; freshlySpawned: boolean; lastAnim: string }>();
   let opponentsLatest: RunnerOpponent[] = [];
 
-  let laneIndex = 1;
-  let lastLane = 1; // lane we came from (a side-bump bounces us back here)
+  let laneIndex = initLane;
+  let lastLane = initLane; // lane we came from (a side-bump bounces us back here)
   let velY = 0;
   let jumping = false;
   let grounded = true; // on the ground OR standing on a box
@@ -359,20 +386,37 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   let smashWindowUntil = 0; // how long that queued press stays live
   let breakCooldownUntil = 0; // 3s cooldown after a successful break
   let attackUntil = 0; // play the smash animation until this time
-  // Ability charge 0..ABILITY_FULL. Only filled by collecting an Ability Box (1-tap).
-  // After firing, it resets to 0 — and a new box must be broken to charge again.
+  // Ability charge 0..ABILITY_FULL. Only filled by breaking an Ability Box (1-tap).
+  // After firing, it resets to 0 — and a new box must be broken to roll again.
   let abilityCharge = 0;
   const ABILITY_FULL = 100;
+  // The randomly-rolled ability currently held. ALL dinos can hold any kind; the box
+  // picks one of the four uniformly at random when broken. Null while no ability is held.
+  type HeldAbilityKind = 'pull' | 'freeze' | 'thunder' | 'box';
+  let heldAbility: HeldAbilityKind | null = null;
+  const ABILITY_POOL: HeldAbilityKind[] = ['pull', 'freeze', 'thunder', 'box'];
+  function rollAbility(): HeldAbilityKind {
+    return ABILITY_POOL[Math.floor(Math.random() * ABILITY_POOL.length)]!;
+  }
   // PvP receiver state — set by applyFreeze / applyStun (called from the canvas in MP).
   // While `frozenUntilLocal` is in the future, lane / jump / slide / smash inputs are
   // ignored. `stunSpeedCapUntilLocal` caps the runner to MIN_SPEED for a brief window.
   let frozenUntilLocal = 0;
   let stunSpeedCapUntilLocal = 0;
+  // Post-hit speed recovery — when the player gets hit (box collision OR pull-from-rival)
+  // they shouldn't restart from MIN_SPEED via the slow auto-accel; that's brutal at high
+  // speeds. Instead: SLOW PHASE for `HIT_SLOW_S` seconds, THEN rapid recovery toward
+  // `preHitSpeed` at `HIT_RECOVERY_ACCEL`. Once they hit pre-hit speed, normal slow
+  // auto-accel takes over.
+  const HIT_SLOW_S = 2;
+  const HIT_RECOVERY_ACCEL = 22; // ~70 km/h restored in just over 1s after slow phase
+  let hitSlowUntil = 0;
+  let preHitSpeed = 0;
   let comboCount = 0; // consecutive coins (for the multiplier)
   let comboUntil = 0; // the coin streak ends if none collected by this time
   let shakeUntil = 0; // camera shakes until this time (on hit)
   let speed = START_SPEED;
-  let distance = 0;
+  let distance = opts.startDistance ?? 0;
   let gemCount = 0;
   let hearts = 3;
   let shieldActive = false;
@@ -559,8 +603,11 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     comboUntil = 0;
     shakeUntil = 0;
     abilityCharge = 0;
+    heldAbility = null;
     frozenUntilLocal = 0;
     stunSpeedCapUntilLocal = 0;
+    hitSlowUntil = 0;
+    preHitSpeed = 0;
     // Snap scenery back to the first biome (grassland).
     (scene.background as THREE.Color).copy(BIOMES[0]!.sky);
     scene.fog!.color.copy(BIOMES[0]!.fog);
@@ -587,7 +634,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     breakCooldownUntil = 0;
     attackUntil = 0;
     speed = START_SPEED;
-    distance = 0;
+    distance = opts.startDistance ?? 0;
+    laneIndex = initLane;
+    lastLane = initLane;
     gemCount = 0;
     hearts = 3;
     shieldActive = false;
@@ -596,7 +645,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     lastSpawn = 0;
     over = false;
     runStartedAt = clock.elapsedTime; // reset the run timer so duration starts at 0
-    player.position.set(0, 0, 0);
+    // Spawn at our assigned lane (x = LANES[initLane]) so MP-staggered players don't
+    // share the centre lane.
+    player.position.set(LANES[initLane]!, 0, 0);
     player.visible = true;
     shieldBubble.visible = false;
     dino.play('run'); // the run anim clears the death tumble (now on the dino's inner rig)
@@ -616,10 +667,16 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       magnet: clock.elapsedTime < magnetUntil,
       speed,
       breakReady: clock.elapsedTime >= breakCooldownUntil,
+      breakCooldownProgress: (() => {
+        const remaining = breakCooldownUntil - clock.elapsedTime;
+        if (remaining <= 0) return 1;
+        return Math.max(0, 1 - remaining / BREAK_COOLDOWN_S);
+      })(),
       combo: comboMult(),
       lane: laneIndex,
       y: player.position.y,
       abilityCharge: Math.min(1, abilityCharge / ABILITY_FULL),
+      heldAbility,
     });
   }
 
@@ -650,7 +707,12 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       return;
     }
     hearts -= 1;
-    speed = Math.max(MIN_SPEED, speed / 1.3); // a real hit costs ~23% of your speed
+    // Remember the speed we had before the hit so the recovery phase can ramp us back
+    // up to it quickly (instead of slowly auto-accelerating from MIN_SPEED). Only update
+    // preHitSpeed if it's a fresh hit — back-to-back hits stack on the lower value.
+    if (clock.elapsedTime >= hitSlowUntil) preHitSpeed = speed;
+    speed = Math.max(MIN_SPEED, speed * 0.4); // bigger drop (≈60%) so the slow phase actually feels slow
+    hitSlowUntil = clock.elapsedTime + HIT_SLOW_S;
     invulnUntil = clock.elapsedTime + 1.3;
     shakeUntil = clock.elapsedTime + 0.3; // screen shake
     opts.sfx?.hit?.();
@@ -733,11 +795,20 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     }
     const t = clock.elapsedTime;
 
-    if (speed < AUTO_CAP) speed = Math.min(speed + dt * ACCEL, AUTO_CAP); // auto only to AUTO_CAP
-    // PvP stun (Brachio Thunder) — hard-cap speed for the stun window so the auto-accel
-    // can't immediately undo the slowdown.
+    // Speed update has three phases:
+    //  1. Post-hit slow window (HIT_SLOW_S after hit()): hard-cap at low speed.
+    //  2. Recovery: if we're below preHitSpeed (capped at AUTO_CAP), ramp up FAST so
+    //     the player doesn't have to redo their whole acceleration from scratch.
+    //  3. Normal auto-accel (slow ramp to AUTO_CAP).
+    // PvP freeze / stun ALWAYS win — they clamp regardless of phase.
+    if (t < hitSlowUntil) {
+      speed = Math.min(speed, MIN_SPEED + 1.5);
+    } else if (preHitSpeed > 0 && speed < Math.min(preHitSpeed, AUTO_CAP)) {
+      speed = Math.min(Math.min(preHitSpeed, AUTO_CAP), speed + HIT_RECOVERY_ACCEL * dt);
+    } else if (speed < AUTO_CAP) {
+      speed = Math.min(speed + dt * ACCEL, AUTO_CAP);
+    }
     if (t < stunSpeedCapUntilLocal) speed = Math.min(speed, MIN_SPEED + 1);
-    // PvP freeze — also clamps speed (a frozen runner shouldn't accelerate either).
     if (isFrozen()) speed = Math.min(speed, MIN_SPEED);
 
     // Multiplayer same-lane catch-up drag. If a ghost dino is just ahead of me in MY lane,
@@ -868,15 +939,15 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
           nameSprite.position.set(0, 1.7, 0);
           group.add(nameSprite);
           scene.add(group);
-          g = { dino, group, nameSprite, nameMat, freshlySpawned: true };
+          g = { dino, group, nameSprite, nameMat, freshlySpawned: true, lastAnim: '' };
           ghosts.set(op.id, g);
         }
         const dz2 = op.distance - distance; // their distance minus mine
         const lane = Math.min(2, Math.max(0, op.lane | 0));
         // TARGET position from the latest server snapshot. The server broadcasts at ~10Hz,
         // so without interpolation the ghost teleports in visible jumps. We lerp the group's
-        // current position toward the target every frame — eats the network jitter without
-        // adding perceptible delay (alpha 18 ≈ ~95% closed in 200ms).
+        // current position toward the target every frame (tighter alpha = snappier feel,
+        // less perceived lag — eats most of the 100ms tick in two frames).
         const tx = LANES[lane]!;
         const ty = op.y;
         const tz = -dz2; // ahead of me = negative z (further into the screen)
@@ -884,13 +955,38 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
           g.group.position.set(tx, ty, tz); // first frame after creation — snap, don't slide in
           g.freshlySpawned = false;
         } else {
-          const alpha = Math.min(1, dt * 18);
+          const alpha = Math.min(1, dt * 25);
           g.group.position.x += (tx - g.group.position.x) * alpha;
           g.group.position.y += (ty - g.group.position.y) * alpha;
           g.group.position.z += (tz - g.group.position.z) * alpha;
         }
-        g.group.visible = !op.finished && Math.abs(dz2) < 50;
-        g.dino.play(op.y > 0.4 ? 'jump' : 'run');
+        g.group.visible = !op.finished && Math.abs(dz2) < 80;
+        // Only call play() when the desired animation actually changes — otherwise the
+        // rig resets the run cycle to frame 0 every frame and looks frozen.
+        const wantAnim = op.y > 0.4 ? 'jump' : (op.frozen ? 'duck' : 'run');
+        if (g.lastAnim !== wantAnim) {
+          g.dino.play(wantAnim);
+          g.lastAnim = wantAnim;
+        }
+        // Tint the ghost based on PvP status so the caster SEES the cast land.
+        // Iterate the materials we set transparent at creation and tweak their colours.
+        const tintHex = op.frozen ? 0x60a5fa : op.stunned ? 0xfde047 : 0xffffff;
+        g.dino.root.traverse((node) => {
+          const mesh = node as THREE.Mesh;
+          if (mesh.isMesh && mesh.material) {
+            const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            for (const m of mats) {
+              const sm = m as THREE.MeshStandardMaterial;
+              if (sm.emissive) {
+                if (op.frozen) sm.emissive.setHex(0x1d4ed8);
+                else if (op.stunned) sm.emissive.setHex(0xb45309);
+                else sm.emissive.setHex(0x000000);
+                sm.emissiveIntensity = op.frozen || op.stunned ? 0.55 : 0;
+              }
+            }
+          }
+        });
+        void tintHex; // kept for potential per-material colour override
         g.dino.update(dt);
       }
       // Remove ghosts whose owner has left the room.
@@ -990,8 +1086,9 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
           breakables.splice(i, 1);
           opts.sfx?.smash?.();
           cb.onRune?.(isCrate ? grantJackpot() : grantRune());
-          // (Smashes no longer charge ⚡ — only the Ability Box does.)
-          breakCooldownUntil = t; // keep variable in sync without gating anything
+          // Cooldown engages AFTER the break — first crate tap (crack only) doesn't
+          // cool down, so the second tap goes through; only the kill closes the window.
+          breakCooldownUntil = t + BREAK_COOLDOWN_S;
           continue;
         }
         crackedNow = true;
@@ -1092,11 +1189,20 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
         pendingSmash = false;
         scene.remove(a.mesh);
         abilityBoxes.splice(i, 1);
-        abilityCharge = ABILITY_FULL; // instant ready
+        // Random ability roll: every dino can hold any of the 4 abilities. The button
+        // updates to the rolled ability's icon; firing consumes it.
+        heldAbility = rollAbility();
+        abilityCharge = ABILITY_FULL; // visual: button is "ready"
         burst(a.mesh.position.x, 1.0, a.mesh.position.z, debrisPMat, 14, 5, 2.5);
         opts.sfx?.smash?.();
         opts.sfx?.rune?.();
-        cb.onRune?.('⚡ ABILITY READY');
+        breakCooldownUntil = t + BREAK_COOLDOWN_S; // same cooldown applies after picking up a box
+        const label =
+          heldAbility === 'freeze' ? '❄️ FREEZE ready' :
+          heldAbility === 'pull' ? '🕸️ PULL ready' :
+          heldAbility === 'thunder' ? '⚡ THUNDER ready' :
+          '📦 BOX ready';
+        cb.onRune?.(label);
         emit();
         continue;
       }
@@ -1242,11 +1348,15 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
       slideUntil = clock.elapsedTime + 0.6;
     }
   };
+  // Smash cooldown — small gate AFTER a successful break so taps feel meaningful instead
+  // of spammable. Per-TAP cooldown would break crates (they need 2 quick taps); per-BREAK
+  // cooldown still lets the first crate-tap crack it and the second-tap break it before
+  // the cooldown engages. Tuned to 1.2s = noticeable but not punishing.
+  const BREAK_COOLDOWN_S = 1.2;
   const breakBox = () => {
     if (over || paused || isFrozen()) return;
     const now = clock.elapsedTime;
-    // No cooldown — tap-to-smash is the primary input now; gating it would feel broken.
-    // (The Ability button has its own charge gate; breakBox stays free-flowing.)
+    if (now < breakCooldownUntil) return; // still cooling down from the last break
     pendingSmash = true;
     smashWindowUntil = now + 0.4; // a press stays live briefly so you can pre-tap
     attackUntil = now + 0.3; // play the smash animation
@@ -1263,24 +1373,31 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
   // a hook. The handle still exposes it under `useAbility` for a clean public API.
   const castAbility = () => {
     if (over || paused || isFrozen()) return;
-    if (abilityCharge < ABILITY_FULL) return; // not ready — no-op
+    if (!heldAbility) return; // nothing to cast
+    const kind = heldAbility;
+    heldAbility = null;
     abilityCharge = 0;
-    const character = opts.character ?? 'trik';
     const t = clock.elapsedTime;
-    // SOLO fallback effect (canvas overrides this in multiplayer by calling the server
-    // ability + consumeAbilityCharge() instead — so this branch only runs in solo).
-    if (character === 'stego') {
+    // SOLO local fallback: with no opponents to actually hit, the held ability becomes
+    // a personal boost so the player still gets a reward for the box pickup. In MP /
+    // bot mode the canvas overrides this (sending the ability to server / bots and
+    // calling consumeAbilityCharge instead) — this branch never runs there.
+    if (kind === 'freeze') {
       shieldActive = true;
       invulnUntil = t + 4;
-      cb.onRune?.('🛡️ IRON PLATES');
-    } else if (character === 'brachio') {
-      magnetUntil = t + 9;
+      cb.onRune?.('🛡️ SHIELD');
+    } else if (kind === 'thunder') {
+      magnetUntil = t + 8;
       gemCount += 10;
-      cb.onRune?.('🧲 COSMIC VACUUM');
+      cb.onRune?.('🧲 MAGNET');
+    } else if (kind === 'box') {
+      hearts = Math.min(5, hearts + 1);
+      cb.onRune?.('❤️ +1 HEART');
     } else {
+      // pull → solo "turbo"
       speed += 22 / 3.6;
       invulnUntil = t + 3;
-      cb.onRune?.('⚡ TURBO DASH');
+      cb.onRune?.('⚡ TURBO');
     }
     opts.sfx?.boost?.();
     opts.sfx?.rune?.();
@@ -1310,9 +1427,11 @@ export function createRunner(parent: HTMLDivElement, cb: RunnerCallbacks, opts: 
     hit();
   };
   /** Burn the charge without playing a solo effect — for MP where the rival gets the
-   *  effect instead. Server-relayed event handles the cast feedback. */
+   *  effect instead. Server-relayed event handles the cast feedback. Also clears the
+   *  held ability so the button visually empties immediately. */
   const consumeAbilityCharge = () => {
     abilityCharge = 0;
+    heldAbility = null;
     emit();
   };
 
